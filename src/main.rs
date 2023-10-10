@@ -1,3 +1,8 @@
+mod utils;
+
+use cudarc::driver::result;
+use std::sync::{Arc, RwLock};
+
 fn main() {
-    println!("Hello, world!");
+    dbg!(utils::structs::GPU::new(0));
 }

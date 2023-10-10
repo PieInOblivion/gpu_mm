@@ -7,3 +7,4 @@ edition = "2021"
 lto = true
 
 [dependencies]
+cudarc = "0.9.14"
