@@ -8,3 +8,4 @@ lto = true
 
 [dependencies]
 cudarc = "0.9.14"
+libc = "0.2.149"
