@@ -7,4 +7,6 @@ edition = "2021"
 lto = true
 
 [dependencies]
-cudarc = "0.9.14"
+cudarc = { version = "0.11.6", features = ["cuda-12050"]}
+image = "0.25.1"
+rand = "0.8.5"

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use cudarc::driver::result::DriverError;
 use cudarc::driver::safe::CudaDevice;
 use cudarc::driver::safe::CudaSlice;
-use cudarc::driver::sys::CUarray_format_enum;
+// use cudarc::driver::sys::CUarray_format_enum;
 
 // struct init
 // init gpu
