@@ -8,8 +8,8 @@ use thiserror::Error;
 use image::{self, ColorType};
 
 // TODO: Still doesn't always have perfect dataset bin final counts
-// TODO: While the shuffle options work perfectly, the final order of data bins
-//       seems to not shuffle properly
+// TODO: While the shuffle options work perfectly, indicies is randomised perfectly,
+//       the final order of data bins seems to not shuffle properly
 // TODO: Inspect an adaptive ratio method
 // TODO: Attempt a string Arc method
 
