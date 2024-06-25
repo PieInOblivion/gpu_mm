@@ -286,6 +286,7 @@ dependencies = [
  "cudarc",
  "image",
  "rand",
+ "thiserror",
 ]
 
 [[package]]
