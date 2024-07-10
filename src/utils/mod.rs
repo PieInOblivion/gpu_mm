@@ -1,2 +1,2 @@
-pub mod structs;
 pub mod dataloader;
+pub mod structs;
