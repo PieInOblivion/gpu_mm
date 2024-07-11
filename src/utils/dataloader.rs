@@ -1,18 +1,18 @@
-use crossbeam::thread;
-use image::{self, ColorType, GenericImageView};
-use rand::prelude::*;
+use image;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use std::fmt::Debug;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Mutex, RwLock};
+use std::sync::Mutex;
 use thiserror::Error;
+use rayon::slice::ParallelSliceMut;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator, IndexedParallelIterator};
 
-// TODO:
-// Simplify and fix the associated prefetch loading functions
+// TODO: Look at rayon::ThreadPoolBuilder::build_global for thread count setting
+// TODO: ImageBatches needs to load both buffers if they are both empty
+// TODO: Simplify the external and internal usage of these functions
 
 #[derive(Error, Debug)]
 pub enum DataLoaderError {
@@ -41,14 +41,15 @@ pub enum DatasetSplit {
 }
 
 pub struct ImageBatches {
-    images: Pin<Box<[u8]>>,
-    images_mutex: Mutex<()>,
-    prefetched_images: Pin<Box<[u8]>>,
-    prefetch_mutex: Mutex<()>,
-    use_prefetch_next: bool,
-    images_per_batch: usize,
-    bytes_per_image: usize,
-    threads: usize,
+    pub images: Pin<Box<[u8]>>,
+    pub images_mutex: Mutex<()>,
+    pub images_loaded: bool,
+    pub prefetched_images: Pin<Box<[u8]>>,
+    pub prefetched_images_loaded: bool,
+    pub prefetch_mutex: Mutex<()>,
+    pub out_use_prefetch_next: bool,
+    pub images_per_batch: usize,
+    pub bytes_per_image: usize,
 }
 
 impl ImageBatches {
@@ -61,45 +62,38 @@ impl ImageBatches {
 
         ImageBatches {
             images: Pin::new(images),
+            images_loaded: false,
             images_mutex: Mutex::new(()),
             prefetched_images: Pin::new(prefetched_images),
+            prefetched_images_loaded: false,
             prefetch_mutex: Mutex::new(()),
-            use_prefetch_next: false,
+            out_use_prefetch_next: false,
             images_per_batch: dl.opt_batch_size,
             bytes_per_image: bytes_per_image as usize,
-            threads: dl.opt_threads,
         }
     }
 
     pub fn load_raw_image_data(&mut self, paths: Vec<PathBuf>) {
-        // TODO: Compare Rayon, Tokio, Crossbeam and std
-        // Tokio has async io advantage
-        // Crossbeam > std
-        // Attempt thread pool style solution
-
-        // This function should lock and unlock correct buffer mutex
-    }
-
-    fn image_pathbuf_to_batch_buffer_raw(&mut self, path: &PathBuf, buffer_offset: usize) {
-        let img = image::open(path).unwrap();
-        let img_rgb = img.to_rgb8();
-        let img_bytes = img_rgb.as_raw();
-
-        // Determine which buffer to use based on use_prefetch_next
-        let (buffer, mutex) = if self.use_prefetch_next {
+        let (buffer, mutex) = if self.out_use_prefetch_next {
             (&mut self.prefetched_images, &self.prefetch_mutex)
         } else {
             (&mut self.images, &self.images_mutex)
         };
 
-        let slice_destination = buffer_offset..(buffer_offset + self.bytes_per_image);
-        dbg!(&slice_destination);
+        let _mutex_lock = mutex.lock().unwrap();
 
-        // Use unsafe to get a mutable reference to the pinned data
-        unsafe {
-            let buffer_slice = buffer.get_unchecked_mut(slice_destination);
-            buffer_slice.copy_from_slice(&img_bytes[..self.bytes_per_image]);
-        }
+        //buffer.par_chunks_exact_mut(self.bytes_per_image).enumerate()
+        //    .for_each(|(i, chunk)| Self::path_to_buffer_copy(&paths[i], chunk));
+
+        buffer.par_chunks_exact_mut(self.bytes_per_image)
+            .zip(paths.par_iter())
+            .for_each(|(chunk, path)| Self::path_to_buffer_copy(path, chunk));
+
+    }
+
+    fn path_to_buffer_copy(path: &PathBuf, slice: &mut [u8]) {
+        let img = image::open(path).unwrap();
+        slice.copy_from_slice(img.as_bytes());
     }
 }
 
@@ -133,6 +127,8 @@ impl DataLoaderForImages {
             return Err(DataLoaderError::DirectoryNotFound(dir.to_string()));
         }
 
+        let valid_extensions = image::ImageFormat::all().flat_map(|format| format.extensions_str()).map(|ext| ext.to_string()).collect();
+
         Ok(DataLoaderForImages {
             dir: path.to_owned(),
             dataset: Vec::new(),
@@ -146,7 +142,7 @@ impl DataLoaderForImages {
             opt_shuffle: true,
             opt_shuffle_seed: None,
             opt_drop_last: true,
-            valid_extensions: vec!["png".to_string(), "jpg".to_string(), "jpeg".to_string()],
+            valid_extensions,
             current_train_batch: 0,
             current_test_batch: 0,
             current_val_batch: 0,
@@ -158,6 +154,7 @@ impl DataLoaderForImages {
     }
 
     pub fn load_dataset(&mut self) -> Result<(), DataLoaderError> {
+        // TODO: benchmark .par_bridge() from rayon. Also does not guarantee order of original iterator
         self.dataset = std::fs::read_dir(&self.dir)?
             .filter_map(Result::ok)
             .map(|entry| entry.path())
@@ -172,13 +169,17 @@ impl DataLoaderForImages {
             return Err(DataLoaderError::EmptyDataset);
         }
 
-        // read_dir does not guarantee consistancy or sorting of any kind
+        // read_dir does not guarantee consistancy or sorting of any kind since filesystems don't either
+        // Useful if trying the same dataset on different systems or filesystems
         if self.opt_sort_dataset {
             self.dataset.sort_unstable();
         }
 
-        self.dataset_indices = Vec::with_capacity(self.dataset.len());
-        self.dataset_indices.extend(0..self.dataset.len());
+        // .collect() can use size_hint from std::ops::Range
+        //self.dataset_indices = Vec::with_capacity(self.dataset.len());
+        //self.dataset_indices.extend(0..self.dataset.len());
+        self.dataset_indices = (0..self.dataset.len()).collect();
+
 
         let mut rng = if self.opt_shuffle {
             if self.opt_shuffle_seed.is_none() {
@@ -229,7 +230,7 @@ impl DataLoaderForImages {
         (train_size, test_size, val_size)
     }
 
-    fn next_batch_of_paths(&mut self, split: DatasetSplit) -> (Vec<PathBuf>, bool) {
+    pub fn next_batch_of_paths(&mut self, split: DatasetSplit) -> (Vec<PathBuf>, bool) {
         let (train_size, test_size, _) = self.get_split_sizes();
         let (start_index, end_index, current_batch) = match split {
             DatasetSplit::Train => (0, train_size, &mut self.current_train_batch),
