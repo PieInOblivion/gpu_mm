@@ -2,13 +2,13 @@ use image;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::slice::ParallelSliceMut;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Mutex;
 use thiserror::Error;
-use rayon::slice::ParallelSliceMut;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator, IndexedParallelIterator};
 
 // TODO: Look at rayon::ThreadPoolBuilder::build_global for thread count setting
 // TODO: ImageBatches needs to load both buffers if they are both empty
@@ -55,7 +55,7 @@ pub struct ImageBatches {
 impl ImageBatches {
     pub fn new(dl: &DataLoaderForImages) -> ImageBatches {
         let bytes_per_image = dl.image_width * dl.image_height * dl.image_bytes_per_pixel;
-        let total_bytes = bytes_per_image as usize * dl.opt_batch_size;
+        let total_bytes = bytes_per_image as usize * dl.config.batch_size;
 
         let images = vec![0u8; total_bytes].into_boxed_slice();
         let prefetched_images = vec![0u8; total_bytes].into_boxed_slice();
@@ -68,7 +68,7 @@ impl ImageBatches {
             prefetched_images_loaded: false,
             prefetch_mutex: Mutex::new(()),
             out_use_prefetch_next: false,
-            images_per_batch: dl.opt_batch_size,
+            images_per_batch: dl.config.batch_size,
             bytes_per_image: bytes_per_image as usize,
         }
     }
@@ -85,10 +85,10 @@ impl ImageBatches {
         //buffer.par_chunks_exact_mut(self.bytes_per_image).enumerate()
         //    .for_each(|(i, chunk)| Self::path_to_buffer_copy(&paths[i], chunk));
 
-        buffer.par_chunks_exact_mut(self.bytes_per_image)
+        buffer
+            .par_chunks_exact_mut(self.bytes_per_image)
             .zip(paths.par_iter())
             .for_each(|(chunk, path)| Self::path_to_buffer_copy(path, chunk));
-
     }
 
     fn path_to_buffer_copy(path: &PathBuf, slice: &mut [u8]) {
@@ -97,19 +97,38 @@ impl ImageBatches {
     }
 }
 
+pub struct DataLoaderForImagesConfig {
+    pub threads: usize,
+    pub batch_size: usize,
+    pub batch_prefetch: bool,
+    pub train_ratio: f32,
+    pub test_ratio: f32,
+    pub sort_dataset: bool,
+    pub shuffle: bool,
+    pub shuffle_seed: Option<u64>,
+    pub drop_last: bool,
+}
+
+impl Default for DataLoaderForImagesConfig {
+    fn default() -> Self {
+        Self {
+            threads: num_cpus::get(),
+            batch_size: 32,
+            batch_prefetch: true,
+            train_ratio: 0.8,
+            test_ratio: 0.1,
+            sort_dataset: false,
+            shuffle: true,
+            shuffle_seed: None,
+            drop_last: true,
+        }
+    }
+}
+
 pub struct DataLoaderForImages {
     pub dir: PathBuf,
     pub dataset: Vec<Box<str>>,
     pub dataset_indices: Vec<usize>,
-    pub opt_threads: usize,
-    pub opt_batch_size: usize,
-    pub opt_batch_prefetch: bool,
-    pub opt_train_ratio: f32,
-    pub opt_test_ratio: f32,
-    pub opt_sort_dataset: bool,
-    pub opt_shuffle: bool,
-    pub opt_shuffle_seed: Option<u64>,
-    pub opt_drop_last: bool,
     pub valid_extensions: Vec<String>,
     pub current_train_batch: usize,
     pub current_test_batch: usize,
@@ -118,30 +137,28 @@ pub struct DataLoaderForImages {
     pub image_height: u32,
     pub image_channels: u32,
     pub image_bytes_per_pixel: u32,
+    pub config: DataLoaderForImagesConfig,
 }
 
 impl DataLoaderForImages {
-    pub fn new(dir: &str) -> Result<Self, DataLoaderError> {
+    pub fn new(
+        dir: &str,
+        config: Option<DataLoaderForImagesConfig>,
+    ) -> Result<Self, DataLoaderError> {
         let path = Path::new(dir);
         if !path.exists() {
             return Err(DataLoaderError::DirectoryNotFound(dir.to_string()));
         }
 
-        let valid_extensions = image::ImageFormat::all().flat_map(|format| format.extensions_str()).map(|ext| ext.to_string()).collect();
+        let valid_extensions = image::ImageFormat::all()
+            .flat_map(|format| format.extensions_str())
+            .map(|ext| ext.to_string())
+            .collect();
 
         Ok(DataLoaderForImages {
             dir: path.to_owned(),
             dataset: Vec::new(),
             dataset_indices: Vec::new(),
-            opt_threads: num_cpus::get(),
-            opt_batch_size: 32,
-            opt_batch_prefetch: true,
-            opt_train_ratio: 0.8,
-            opt_test_ratio: 0.1,
-            opt_sort_dataset: false,
-            opt_shuffle: true,
-            opt_shuffle_seed: None,
-            opt_drop_last: true,
             valid_extensions,
             current_train_batch: 0,
             current_test_batch: 0,
@@ -150,6 +167,7 @@ impl DataLoaderForImages {
             image_height: 0,
             image_channels: 0,
             image_bytes_per_pixel: 0,
+            config: config.unwrap_or_default(),
         })
     }
 
@@ -171,7 +189,7 @@ impl DataLoaderForImages {
 
         // read_dir does not guarantee consistancy or sorting of any kind since filesystems don't either
         // Useful if trying the same dataset on different systems or filesystems
-        if self.opt_sort_dataset {
+        if self.config.sort_dataset {
             self.dataset.sort_unstable();
         }
 
@@ -180,12 +198,11 @@ impl DataLoaderForImages {
         //self.dataset_indices.extend(0..self.dataset.len());
         self.dataset_indices = (0..self.dataset.len()).collect();
 
-
-        let mut rng = if self.opt_shuffle {
-            if self.opt_shuffle_seed.is_none() {
-                self.opt_shuffle_seed = Some(rand::thread_rng().gen());
+        let mut rng = if self.config.shuffle {
+            if self.config.shuffle_seed.is_none() {
+                self.config.shuffle_seed = Some(rand::thread_rng().gen());
             }
-            Some(StdRng::seed_from_u64(self.opt_shuffle_seed.unwrap()))
+            Some(StdRng::seed_from_u64(self.config.shuffle_seed.unwrap()))
         } else {
             None
         };
@@ -210,8 +227,8 @@ impl DataLoaderForImages {
                 test: test_ratio,
             });
         }
-        self.opt_train_ratio = train_ratio;
-        self.opt_test_ratio = test_ratio;
+        self.config.train_ratio = train_ratio;
+        self.config.test_ratio = test_ratio;
         Ok(())
     }
 
@@ -224,8 +241,8 @@ impl DataLoaderForImages {
 
     fn get_split_sizes(&self) -> (usize, usize, usize) {
         let total_size = self.dataset.len();
-        let train_size = (total_size as f32 * self.opt_train_ratio) as usize;
-        let test_size = (total_size as f32 * self.opt_test_ratio) as usize;
+        let train_size = (total_size as f32 * self.config.train_ratio) as usize;
+        let test_size = (total_size as f32 * self.config.test_ratio) as usize;
         let val_size = total_size - train_size - test_size;
         (train_size, test_size, val_size)
     }
@@ -247,14 +264,14 @@ impl DataLoaderForImages {
         };
 
         let split_size = end_index - start_index;
-        let total_batches = (split_size + self.opt_batch_size - 1) / self.opt_batch_size;
+        let total_batches = (split_size + self.config.batch_size - 1) / self.config.batch_size;
 
-        let batch_start = *current_batch * self.opt_batch_size;
+        let batch_start = *current_batch * self.config.batch_size;
         let batch = self.dataset_indices[start_index..end_index]
             .iter()
             .cycle()
             .skip(batch_start)
-            .take(self.opt_batch_size)
+            .take(self.config.batch_size)
             .map(|&idx| PathBuf::from(&self.dir).join(&*self.dataset[idx]))
             .collect();
 
@@ -276,28 +293,28 @@ impl DataLoaderForImages {
 
     pub fn print_dataset_info(&self) {
         let total_size = self.dataset.len();
-        let train_size = (total_size as f32 * self.opt_train_ratio) as usize;
-        let test_size = (total_size as f32 * self.opt_test_ratio) as usize;
+        let train_size = (total_size as f32 * self.config.train_ratio) as usize;
+        let test_size = (total_size as f32 * self.config.test_ratio) as usize;
         let val_size = total_size - train_size - test_size;
 
-        let train_batches = (train_size + self.opt_batch_size - 1) / self.opt_batch_size;
-        let test_batches = (test_size + self.opt_batch_size - 1) / self.opt_batch_size;
-        let val_batches = (val_size + self.opt_batch_size - 1) / self.opt_batch_size;
+        let train_batches = (train_size + self.config.batch_size - 1) / self.config.batch_size;
+        let test_batches = (test_size + self.config.batch_size - 1) / self.config.batch_size;
+        let val_batches = (val_size + self.config.batch_size - 1) / self.config.batch_size;
 
-        let train_batch_remainder = train_size % self.opt_batch_size;
-        let test_batch_remainder = test_size % self.opt_batch_size;
-        let val_batch_remainder = val_size % self.opt_batch_size;
+        let train_batch_remainder = train_size % self.config.batch_size;
+        let test_batch_remainder = test_size % self.config.batch_size;
+        let val_batch_remainder = val_size % self.config.batch_size;
 
         println!("Dataset Information:");
         println!("-------------------");
         println!("Total size: {}", total_size);
-        println!("Batch size: {}", self.opt_batch_size);
+        println!("Batch size: {}", self.config.batch_size);
         println!();
         println!("Train split:");
         println!(
             "  Size: {} ({:.2}%)",
             train_size,
-            self.opt_train_ratio * 100.0
+            self.config.train_ratio * 100.0
         );
         println!("  Batches: {}", train_batches);
         println!(
@@ -305,7 +322,7 @@ impl DataLoaderForImages {
             if train_batch_remainder > 0 {
                 train_batch_remainder
             } else {
-                self.opt_batch_size
+                self.config.batch_size
             }
         );
         println!();
@@ -313,7 +330,7 @@ impl DataLoaderForImages {
         println!(
             "  Size: {} ({:.2}%)",
             test_size,
-            self.opt_test_ratio * 100.0
+            self.config.test_ratio * 100.0
         );
         println!("  Batches: {}", test_batches);
         println!(
@@ -321,7 +338,7 @@ impl DataLoaderForImages {
             if test_batch_remainder > 0 {
                 test_batch_remainder
             } else {
-                self.opt_batch_size
+                self.config.batch_size
             }
         );
         println!();
@@ -329,7 +346,7 @@ impl DataLoaderForImages {
         println!(
             "  Size: {} ({:.2}%)",
             val_size,
-            (1.0 - self.opt_train_ratio - self.opt_test_ratio) * 100.0
+            (1.0 - self.config.train_ratio - self.config.test_ratio) * 100.0
         );
         println!("  Batches: {}", val_batches);
         println!(
@@ -337,11 +354,11 @@ impl DataLoaderForImages {
             if val_batch_remainder > 0 {
                 val_batch_remainder
             } else {
-                self.opt_batch_size
+                self.config.batch_size
             }
         );
         println!();
-        println!("Shuffle: {}", self.opt_shuffle);
-        println!("Seed: {:?}", self.opt_shuffle_seed);
+        println!("Shuffle: {}", self.config.shuffle);
+        println!("Seed: {:?}", self.config.shuffle_seed);
     }
 }
