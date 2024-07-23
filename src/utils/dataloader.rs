@@ -10,7 +10,8 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use thiserror::Error;
 
-// TODO: Look at rayon::ThreadPoolBuilder::build_global for thread count setting
+use super::dataloader_config::DataLoaderConfig;
+
 // TODO: ImageBatches needs to load both buffers if they are both empty
 // TODO: Simplify the external and internal usage of these functions
 
@@ -45,8 +46,8 @@ pub struct ImageBatches {
     pub images_mutex: Mutex<()>,
     pub images_loaded: bool,
     pub prefetched_images: Pin<Box<[u8]>>,
-    pub prefetched_images_loaded: bool,
     pub prefetch_mutex: Mutex<()>,
+    pub prefetched_images_loaded: bool,
     pub out_use_prefetch_next: bool,
     pub images_per_batch: usize,
     pub bytes_per_image: usize,
@@ -62,11 +63,11 @@ impl ImageBatches {
 
         ImageBatches {
             images: Pin::new(images),
-            images_loaded: false,
             images_mutex: Mutex::new(()),
+            images_loaded: false,
             prefetched_images: Pin::new(prefetched_images),
-            prefetched_images_loaded: false,
             prefetch_mutex: Mutex::new(()),
+            prefetched_images_loaded: false,
             out_use_prefetch_next: false,
             images_per_batch: dl.config.batch_size,
             bytes_per_image: bytes_per_image as usize,
@@ -97,34 +98,6 @@ impl ImageBatches {
     }
 }
 
-pub struct DataLoaderForImagesConfig {
-    pub threads: usize,
-    pub batch_size: usize,
-    pub batch_prefetch: bool,
-    pub train_ratio: f32,
-    pub test_ratio: f32,
-    pub sort_dataset: bool,
-    pub shuffle: bool,
-    pub shuffle_seed: Option<u64>,
-    pub drop_last: bool,
-}
-
-impl Default for DataLoaderForImagesConfig {
-    fn default() -> Self {
-        Self {
-            threads: num_cpus::get(),
-            batch_size: 32,
-            batch_prefetch: true,
-            train_ratio: 0.8,
-            test_ratio: 0.1,
-            sort_dataset: false,
-            shuffle: true,
-            shuffle_seed: None,
-            drop_last: true,
-        }
-    }
-}
-
 pub struct DataLoaderForImages {
     pub dir: PathBuf,
     pub dataset: Vec<Box<str>>,
@@ -137,14 +110,11 @@ pub struct DataLoaderForImages {
     pub image_height: u32,
     pub image_channels: u32,
     pub image_bytes_per_pixel: u32,
-    pub config: DataLoaderForImagesConfig,
+    pub config: DataLoaderConfig,
 }
 
 impl DataLoaderForImages {
-    pub fn new(
-        dir: &str,
-        config: Option<DataLoaderForImagesConfig>,
-    ) -> Result<Self, DataLoaderError> {
+    pub fn new(dir: &str, config: Option<DataLoaderConfig>) -> Result<Self, DataLoaderError> {
         let path = Path::new(dir);
         if !path.exists() {
             return Err(DataLoaderError::DirectoryNotFound(dir.to_string()));
@@ -207,6 +177,7 @@ impl DataLoaderForImages {
             None
         };
 
+        // TODO: Can this be deterministically parallelised?
         if let Some(mut rng) = rng.as_mut() {
             self.dataset_indices.shuffle(&mut rng);
         }
@@ -216,6 +187,7 @@ impl DataLoaderForImages {
         Ok(())
     }
 
+    // TODO: Move to config
     pub fn set_split_ratios(
         &mut self,
         train_ratio: f32,

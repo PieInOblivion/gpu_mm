@@ -1,5 +1,6 @@
-use utils::dataloader::{
-    DataLoaderForImages, DataLoaderForImagesConfig, DatasetSplit, ImageBatches,
+use utils::{
+    dataloader::{DataLoaderForImages, DatasetSplit, ImageBatches},
+    dataloader_config::DataLoaderConfig,
 };
 
 mod utils;
@@ -8,9 +9,13 @@ mod utils;
 // use std::sync::{Arc, RwLock};
 
 fn main() {
-    let mut config = DataLoaderForImagesConfig::default();
-    config.shuffle_seed = Some(727);
-    config.batch_size = 1;
+    let config = DataLoaderConfig {
+        shuffle_seed: Some(727),
+        batch_size: 1,
+        ..Default::default()
+    };
+
+    let c2 = DataLoaderConfig::new2(Default::default());
 
     let mut dl =
         DataLoaderForImages::new("/home/lucas/Documents/mnist_png/test/0", Some(config)).unwrap();
