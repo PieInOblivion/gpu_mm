@@ -13,13 +13,10 @@ fn main() {
         shuffle_seed: Some(727),
         batch_size: 1,
         ..Default::default()
-    };
-
-    let c2 = DataLoaderConfig::new2(Default::default());
+    }.build().unwrap();
 
     let mut dl =
         DataLoaderForImages::new("/home/lucas/Documents/mnist_png/test/0", Some(config)).unwrap();
-    dl.load_dataset().unwrap();
     dl.print_dataset_info();
 
     let mut ib = ImageBatches::new(&dl);

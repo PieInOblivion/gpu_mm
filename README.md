@@ -11,6 +11,9 @@ https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_cooperat
 
 https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkCooperativeMatrixPropertiesNV.html
 
+https://github.com/DTolm/VkFFT
+https://ieeexplore.ieee.org/document/10036080
+
 ### CUDA:
 https://docs.rs/cudarc/latest/cudarc/
 
@@ -28,3 +31,7 @@ https://github.com/UpsettingBoy/gpgpu-rs
 https://github.com/autumnai/rust-cudnn
 
 https://github.com/arrayfire/arrayfire-rust
+
+
+### Other
+https://github.com/huggingface/candle 

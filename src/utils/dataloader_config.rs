@@ -1,3 +1,7 @@
+use rayon::ThreadPoolBuilder;
+
+use super::dataloader_error::DataLoaderError;
+
 pub struct DataLoaderConfig {
     pub threads: usize,
     pub batch_size: usize,
@@ -10,24 +14,22 @@ pub struct DataLoaderConfig {
     pub drop_last: bool,
 }
 
-// config = DataLoaderConfig({})
 impl DataLoaderConfig {
-    pub fn new(
-        threads: usize,
-        batch_size: usize,
-        batch_prefetch: usize,
-        train_ratio: f32,
-        test_ratio: f32,
-        sort_dataset: bool,
-        shuffle: bool,
-        shuffle_seed: Option<u64>,
-        drop_last: bool,
-    ) {
+    pub fn build(mut self) -> Result<Self, DataLoaderError> {
+        if self.threads == 0 {
+            self.threads = num_cpus::get();
+        }
+
+        ThreadPoolBuilder::new()
+        .num_threads(self.threads)
+        .build_global()?;
+
+        check_split_ratios(self.train_ratio, self.test_ratio)?;
+        
+        Ok(self)
     }
-    pub fn new2(config: DataLoaderConfig) {}
 }
 
-// TODO: Look at rayon::ThreadPoolBuilder::build_global for thread count setting
 impl Default for DataLoaderConfig {
     fn default() -> Self {
         Self {
@@ -42,4 +44,17 @@ impl Default for DataLoaderConfig {
             drop_last: true,
         }
     }
+}
+
+fn check_split_ratios(
+    train_ratio: f32,
+    test_ratio: f32,
+) -> Result<(), DataLoaderError> {
+    if train_ratio + test_ratio > 1.0 || train_ratio <= 0.0 || test_ratio < 0.0 {
+        return Err(DataLoaderError::InvalidSplitRatios {
+            train: train_ratio,
+            test: test_ratio,
+        });
+    }
+    Ok(())
 }

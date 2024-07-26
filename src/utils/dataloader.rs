@@ -4,36 +4,17 @@ use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use rayon::slice::ParallelSliceMut;
-use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Mutex;
-use thiserror::Error;
+use std::collections::HashSet;
 
 use super::dataloader_config::DataLoaderConfig;
+use super::dataloader_error::DataLoaderError;
 
 // TODO: ImageBatches needs to load both buffers if they are both empty
 // TODO: Simplify the external and internal usage of these functions
-
-#[derive(Error, Debug)]
-pub enum DataLoaderError {
-    #[error("Directory not found: {0}")]
-    DirectoryNotFound(String),
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-    #[error("Invalid dataset split ratios. Train: {train}, Test: {test}")]
-    InvalidSplitRatios { train: f32, test: f32 },
-    #[error("Image error: {0}")]
-    ImageError(#[from] image::ImageError),
-    #[error("Unsupported image format")]
-    UnsupportedImageFormat,
-    #[error("No images found in the dataset")]
-    EmptyDataset,
-    #[error("Thread communication error: {0}")]
-    ThreadError(String),
-    #[error("Failed to send task: {0}")]
-    TaskSendError(String),
-}
+// TODO: Condvar solution for prefetching?
 
 pub enum DatasetSplit {
     Train,
@@ -83,9 +64,6 @@ impl ImageBatches {
 
         let _mutex_lock = mutex.lock().unwrap();
 
-        //buffer.par_chunks_exact_mut(self.bytes_per_image).enumerate()
-        //    .for_each(|(i, chunk)| Self::path_to_buffer_copy(&paths[i], chunk));
-
         buffer
             .par_chunks_exact_mut(self.bytes_per_image)
             .zip(paths.par_iter())
@@ -102,7 +80,7 @@ pub struct DataLoaderForImages {
     pub dir: PathBuf,
     pub dataset: Vec<Box<str>>,
     pub dataset_indices: Vec<usize>,
-    pub valid_extensions: Vec<String>,
+    pub valid_extensions: HashSet<String>,
     pub current_train_batch: usize,
     pub current_test_batch: usize,
     pub current_val_batch: usize,
@@ -125,7 +103,7 @@ impl DataLoaderForImages {
             .map(|ext| ext.to_string())
             .collect();
 
-        Ok(DataLoaderForImages {
+        let mut loader = DataLoaderForImages {
             dir: path.to_owned(),
             dataset: Vec::new(),
             dataset_indices: Vec::new(),
@@ -138,19 +116,19 @@ impl DataLoaderForImages {
             image_channels: 0,
             image_bytes_per_pixel: 0,
             config: config.unwrap_or_default(),
-        })
+        };
+
+        loader.load_dataset()?;
+
+        Ok(loader)
     }
 
-    pub fn load_dataset(&mut self) -> Result<(), DataLoaderError> {
+    fn load_dataset(&mut self) -> Result<(), DataLoaderError> {
         // TODO: benchmark .par_bridge() from rayon. Also does not guarantee order of original iterator
-        self.dataset = std::fs::read_dir(&self.dir)?
+       self.dataset = std::fs::read_dir(&self.dir)?
             .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| self.is_valid_extension(path))
-            .filter_map(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str().map(|s| s.into()))
-            })
+            .filter(|entry| self.is_valid_extension(&entry.path()))
+            .filter_map(|entry| entry.file_name().to_str().map(|s| s.to_owned().into_boxed_str()))
             .collect();
 
         if self.dataset.is_empty() {
@@ -187,23 +165,6 @@ impl DataLoaderForImages {
         Ok(())
     }
 
-    // TODO: Move to config
-    pub fn set_split_ratios(
-        &mut self,
-        train_ratio: f32,
-        test_ratio: f32,
-    ) -> Result<(), DataLoaderError> {
-        if train_ratio + test_ratio > 1.0 || train_ratio <= 0.0 || test_ratio < 0.0 {
-            return Err(DataLoaderError::InvalidSplitRatios {
-                train: train_ratio,
-                test: test_ratio,
-            });
-        }
-        self.config.train_ratio = train_ratio;
-        self.config.test_ratio = test_ratio;
-        Ok(())
-    }
-
     fn is_valid_extension(&self, path: &PathBuf) -> bool {
         path.extension()
             .and_then(|ext| ext.to_str())
@@ -219,6 +180,8 @@ impl DataLoaderForImages {
         (train_size, test_size, val_size)
     }
 
+    // TODO: Make it an iterator, or an iterator version of it
+    // When finished a loop, allow for reshuffling to be an option
     pub fn next_batch_of_paths(&mut self, split: DatasetSplit) -> (Vec<PathBuf>, bool) {
         let (train_size, test_size, _) = self.get_split_sizes();
         let (start_index, end_index, current_batch) = match split {
