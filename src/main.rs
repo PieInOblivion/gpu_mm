@@ -1,6 +1,7 @@
 use utils::{
     dataloader::{DataLoaderForImages, DatasetSplit, ImageBatches},
     dataloader_config::DataLoaderConfig,
+    dataloader_info::print_dataset_info,
 };
 
 mod utils;
@@ -13,11 +14,14 @@ fn main() {
         shuffle_seed: Some(727),
         batch_size: 1,
         ..Default::default()
-    }.build().unwrap();
+    }
+    .build()
+    .unwrap();
 
     let mut dl =
         DataLoaderForImages::new("/home/lucas/Documents/mnist_png/test/0", Some(config)).unwrap();
-    dl.print_dataset_info();
+
+    print_dataset_info(&dl);
 
     let mut ib = ImageBatches::new(&dl);
     ib.load_raw_image_data(dl.next_batch_of_paths(DatasetSplit::Test).0);

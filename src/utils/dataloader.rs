@@ -4,10 +4,10 @@ use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use rayon::slice::ParallelSliceMut;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Mutex;
-use std::collections::HashSet;
 
 use super::dataloader_config::DataLoaderConfig;
 use super::dataloader_error::DataLoaderError;
@@ -119,16 +119,22 @@ impl DataLoaderForImages {
         };
 
         loader.load_dataset()?;
+        loader.scan_first_image()?;
 
         Ok(loader)
     }
 
     fn load_dataset(&mut self) -> Result<(), DataLoaderError> {
         // TODO: benchmark .par_bridge() from rayon. Also does not guarantee order of original iterator
-       self.dataset = std::fs::read_dir(&self.dir)?
+        self.dataset = std::fs::read_dir(&self.dir)?
             .filter_map(Result::ok)
             .filter(|entry| self.is_valid_extension(&entry.path()))
-            .filter_map(|entry| entry.file_name().to_str().map(|s| s.to_owned().into_boxed_str()))
+            .filter_map(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|s| s.to_owned().into_boxed_str())
+            })
             .collect();
 
         if self.dataset.is_empty() {
@@ -159,8 +165,6 @@ impl DataLoaderForImages {
         if let Some(mut rng) = rng.as_mut() {
             self.dataset_indices.shuffle(&mut rng);
         }
-
-        self.scan_first_image()?;
 
         Ok(())
     }
@@ -216,7 +220,7 @@ impl DataLoaderForImages {
         (batch, is_last)
     }
 
-    pub fn scan_first_image(&mut self) -> Result<(), DataLoaderError> {
+    fn scan_first_image(&mut self) -> Result<(), DataLoaderError> {
         let first_image_path = PathBuf::from(&self.dir).join(&*self.dataset[0]);
         let img = image::open(first_image_path)?;
         self.image_width = img.width();
@@ -224,76 +228,5 @@ impl DataLoaderForImages {
         self.image_channels = img.color().channel_count() as u32;
         self.image_bytes_per_pixel = img.color().bytes_per_pixel() as u32;
         Ok(())
-    }
-
-    pub fn print_dataset_info(&self) {
-        let total_size = self.dataset.len();
-        let train_size = (total_size as f32 * self.config.train_ratio) as usize;
-        let test_size = (total_size as f32 * self.config.test_ratio) as usize;
-        let val_size = total_size - train_size - test_size;
-
-        let train_batches = (train_size + self.config.batch_size - 1) / self.config.batch_size;
-        let test_batches = (test_size + self.config.batch_size - 1) / self.config.batch_size;
-        let val_batches = (val_size + self.config.batch_size - 1) / self.config.batch_size;
-
-        let train_batch_remainder = train_size % self.config.batch_size;
-        let test_batch_remainder = test_size % self.config.batch_size;
-        let val_batch_remainder = val_size % self.config.batch_size;
-
-        println!("Dataset Information:");
-        println!("-------------------");
-        println!("Total size: {}", total_size);
-        println!("Batch size: {}", self.config.batch_size);
-        println!();
-        println!("Train split:");
-        println!(
-            "  Size: {} ({:.2}%)",
-            train_size,
-            self.config.train_ratio * 100.0
-        );
-        println!("  Batches: {}", train_batches);
-        println!(
-            "  Last batch size: {}",
-            if train_batch_remainder > 0 {
-                train_batch_remainder
-            } else {
-                self.config.batch_size
-            }
-        );
-        println!();
-        println!("Test split:");
-        println!(
-            "  Size: {} ({:.2}%)",
-            test_size,
-            self.config.test_ratio * 100.0
-        );
-        println!("  Batches: {}", test_batches);
-        println!(
-            "  Last batch size: {}",
-            if test_batch_remainder > 0 {
-                test_batch_remainder
-            } else {
-                self.config.batch_size
-            }
-        );
-        println!();
-        println!("Validation split:");
-        println!(
-            "  Size: {} ({:.2}%)",
-            val_size,
-            (1.0 - self.config.train_ratio - self.config.test_ratio) * 100.0
-        );
-        println!("  Batches: {}", val_batches);
-        println!(
-            "  Last batch size: {}",
-            if val_batch_remainder > 0 {
-                val_batch_remainder
-            } else {
-                self.config.batch_size
-            }
-        );
-        println!();
-        println!("Shuffle: {}", self.config.shuffle);
-        println!("Seed: {:?}", self.config.shuffle_seed);
     }
 }
