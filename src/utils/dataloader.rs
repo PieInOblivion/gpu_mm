@@ -11,11 +11,14 @@ use std::sync::Mutex;
 
 use super::dataloader_config::DataLoaderConfig;
 use super::dataloader_error::DataLoaderError;
+use super::dataloader_iter::ImageBatchIterator;
 
 // TODO: ImageBatches needs to load both buffers if they are both empty
 // TODO: Simplify the external and internal usage of these functions
 // TODO: Condvar solution for prefetching?
+// TODO: Combine ImageBatches and DataLoaderForImages
 
+#[derive(Copy, Clone)]
 pub enum DatasetSplit {
     Train,
     Test,
@@ -81,9 +84,6 @@ pub struct DataLoaderForImages {
     pub dataset: Vec<Box<str>>,
     pub dataset_indices: Vec<usize>,
     pub valid_extensions: HashSet<String>,
-    pub current_train_batch: usize,
-    pub current_test_batch: usize,
-    pub current_val_batch: usize,
     pub image_width: u32,
     pub image_height: u32,
     pub image_channels: u32,
@@ -108,9 +108,6 @@ impl DataLoaderForImages {
             dataset: Vec::new(),
             dataset_indices: Vec::new(),
             valid_extensions,
-            current_train_batch: 0,
-            current_test_batch: 0,
-            current_val_batch: 0,
             image_width: 0,
             image_height: 0,
             image_channels: 0,
@@ -184,40 +181,35 @@ impl DataLoaderForImages {
         (train_size, test_size, val_size)
     }
 
-    // TODO: Make it an iterator, or an iterator version of it
     // When finished a loop, allow for reshuffling to be an option
-    pub fn next_batch_of_paths(&mut self, split: DatasetSplit) -> (Vec<PathBuf>, bool) {
+    pub fn next_batch_of_paths(&self, split: DatasetSplit, batch_number: usize) -> Option<Vec<PathBuf>> {
         let (train_size, test_size, _) = self.get_split_sizes();
-        let (start_index, end_index, current_batch) = match split {
-            DatasetSplit::Train => (0, train_size, &mut self.current_train_batch),
-            DatasetSplit::Test => (
-                train_size,
-                train_size + test_size,
-                &mut self.current_test_batch,
-            ),
-            DatasetSplit::Validation => (
-                train_size + test_size,
-                self.dataset.len(),
-                &mut self.current_val_batch,
-            ),
+        let (start_index, end_index) = match split {
+            DatasetSplit::Train => (0, train_size),
+            DatasetSplit::Test => (train_size, train_size + test_size),
+            DatasetSplit::Validation => (train_size + test_size, self.dataset.len()),
         };
 
         let split_size = end_index - start_index;
-        let total_batches = (split_size + self.config.batch_size - 1) / self.config.batch_size;
+        let batch_start = batch_number * self.config.batch_size;
+        
+        if batch_start >= split_size {
+            return None;
+        }
 
-        let batch_start = *current_batch * self.config.batch_size;
-        let batch = self.dataset_indices[start_index..end_index]
+        let batch_end = (batch_start + self.config.batch_size).min(split_size);
+        let is_last_batch = batch_end == split_size;
+
+        if self.config.drop_last && is_last_batch && (batch_end - batch_start) < self.config.batch_size {
+            return None;
+        }
+
+        let batch = self.dataset_indices[start_index + batch_start..start_index + batch_end]
             .iter()
-            .cycle()
-            .skip(batch_start)
-            .take(self.config.batch_size)
             .map(|&idx| PathBuf::from(&self.dir).join(&*self.dataset[idx]))
             .collect();
 
-        let is_last = *current_batch == total_batches - 1;
-        *current_batch = (*current_batch + 1) % total_batches;
-
-        (batch, is_last)
+        Some(batch)
     }
 
     fn scan_first_image(&mut self) -> Result<(), DataLoaderError> {
@@ -228,5 +220,9 @@ impl DataLoaderForImages {
         self.image_channels = img.color().channel_count() as u32;
         self.image_bytes_per_pixel = img.color().bytes_per_pixel() as u32;
         Ok(())
+    }
+
+    pub fn iter(&self, split: DatasetSplit) -> ImageBatchIterator {
+        ImageBatchIterator::new(self, split)
     }
 }

@@ -23,7 +23,11 @@ fn main() {
 
     print_dataset_info(&dl);
 
+    for batch_of_paths in dl.iter(DatasetSplit::Test) {
+        dbg!(batch_of_paths);
+    }
+
     let mut ib = ImageBatches::new(&dl);
-    ib.load_raw_image_data(dl.next_batch_of_paths(DatasetSplit::Test).0);
+    ib.load_raw_image_data(dl.next_batch_of_paths(DatasetSplit::Test, 1).unwrap());
     println!("{:?}", ib.images);
 }
