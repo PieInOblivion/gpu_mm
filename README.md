@@ -18,6 +18,8 @@ https://github.com/unknownue/vulkan-tutorial-rust
 
 https://github.com/ash-rs/ash
 
+https://github.com/vulkano-rs/vulkano
+
 https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_cooperative_matrix.html
 
 https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkCooperativeMatrixPropertiesNV.html
@@ -46,3 +48,5 @@ https://github.com/arrayfire/arrayfire-rust
 
 ### Other
 https://github.com/huggingface/candle 
+
+https://adaptivecpp.github.io/AdaptiveCpp/
