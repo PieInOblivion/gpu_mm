@@ -1,3 +1,14 @@
+This project is a Rust ML training and running library.
+
+This library will contain high-level abstractions to make ML model development and usage easy and compute efficient.
+
+The priorities of this library are compute efficiency first, ease of use second.
+
+The current focus of the library will be CUDA support. As Vulkan compute turns from discussion to spec, support will be added.
+
+The project aims to have abstractions at a level similar to PyTorch.
+
+
 ### Vulkan:
 https://github.com/jeffbolznv/vk_cooperative_matrix_perf
 

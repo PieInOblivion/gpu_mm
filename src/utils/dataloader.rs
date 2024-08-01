@@ -18,6 +18,14 @@ use super::dataloader_iter::ImageBatchIterator;
 // TODO: Condvar solution for prefetching?
 // TODO: Combine ImageBatches and DataLoaderForImages
 
+// TODO: Image label support:
+//       - Built in csv support
+//       - One hot encoding
+//       - BYO array support
+
+// NOTE: Always drop_last for now, as the end of the pixel buffer will include
+//       last batches image data
+
 #[derive(Copy, Clone)]
 pub enum DatasetSplit {
     Train,
@@ -182,7 +190,11 @@ impl DataLoaderForImages {
     }
 
     // When finished a loop, allow for reshuffling to be an option
-    pub fn next_batch_of_paths(&self, split: DatasetSplit, batch_number: usize) -> Option<Vec<PathBuf>> {
+    pub fn next_batch_of_paths(
+        &self,
+        split: DatasetSplit,
+        batch_number: usize,
+    ) -> Option<Vec<PathBuf>> {
         let (train_size, test_size, _) = self.get_split_sizes();
         let (start_index, end_index) = match split {
             DatasetSplit::Train => (0, train_size),
@@ -192,7 +204,7 @@ impl DataLoaderForImages {
 
         let split_size = end_index - start_index;
         let batch_start = batch_number * self.config.batch_size;
-        
+
         if batch_start >= split_size {
             return None;
         }
@@ -200,7 +212,10 @@ impl DataLoaderForImages {
         let batch_end = (batch_start + self.config.batch_size).min(split_size);
         let is_last_batch = batch_end == split_size;
 
-        if self.config.drop_last && is_last_batch && (batch_end - batch_start) < self.config.batch_size {
+        if self.config.drop_last
+            && is_last_batch
+            && (batch_end - batch_start) < self.config.batch_size
+        {
             return None;
         }
 
@@ -226,3 +241,4 @@ impl DataLoaderForImages {
         ImageBatchIterator::new(self, split)
     }
 }
+

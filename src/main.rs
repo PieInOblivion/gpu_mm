@@ -18,7 +18,7 @@ fn main() {
     .build()
     .unwrap();
 
-    let mut dl =
+    let dl =
         DataLoaderForImages::new("/home/lucas/Documents/mnist_png/test/0", Some(config)).unwrap();
 
     print_dataset_info(&dl);
