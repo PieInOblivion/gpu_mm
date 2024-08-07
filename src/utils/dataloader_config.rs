@@ -1,3 +1,4 @@
+use rand::rngs::StdRng;
 use rayon::ThreadPoolBuilder;
 
 use super::dataloader_error::DataLoaderError;
@@ -11,6 +12,7 @@ pub struct DataLoaderConfig {
     pub sort_dataset: bool,
     pub shuffle: bool,
     pub shuffle_seed: Option<u64>,
+    pub rng: Option<StdRng>,
     pub drop_last: bool,
 }
 
@@ -21,11 +23,11 @@ impl DataLoaderConfig {
         }
 
         ThreadPoolBuilder::new()
-        .num_threads(self.threads)
-        .build_global()?;
+            .num_threads(self.threads)
+            .build_global()?;
 
         check_split_ratios(self.train_ratio, self.test_ratio)?;
-        
+
         Ok(self)
     }
 }
@@ -41,15 +43,13 @@ impl Default for DataLoaderConfig {
             sort_dataset: false,
             shuffle: true,
             shuffle_seed: None,
+            rng: None,
             drop_last: true,
         }
     }
 }
 
-fn check_split_ratios(
-    train_ratio: f32,
-    test_ratio: f32,
-) -> Result<(), DataLoaderError> {
+fn check_split_ratios(train_ratio: f32, test_ratio: f32) -> Result<(), DataLoaderError> {
     if train_ratio + test_ratio > 1.0 || train_ratio <= 0.0 || test_ratio < 0.0 {
         return Err(DataLoaderError::InvalidSplitRatios {
             train: train_ratio,

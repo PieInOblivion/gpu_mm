@@ -19,4 +19,7 @@ pub enum DataLoaderError {
 
     #[error("Failed to build thread pool: {0}")]
     ThreadPoolBuildError(#[from] rayon::ThreadPoolBuildError),
+
+    #[error("Random number generator (shuffle_seed) not set or enabled")]
+    RngNotSet,
 }

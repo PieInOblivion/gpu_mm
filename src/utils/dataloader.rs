@@ -157,7 +157,7 @@ impl DataLoaderForImages {
         //self.dataset_indices.extend(0..self.dataset.len());
         self.dataset_indices = (0..self.dataset.len()).collect();
 
-        let mut rng = if self.config.shuffle {
+        self.config.rng = if self.config.shuffle {
             if self.config.shuffle_seed.is_none() {
                 self.config.shuffle_seed = Some(rand::thread_rng().gen());
             }
@@ -166,11 +166,25 @@ impl DataLoaderForImages {
             None
         };
 
-        // TODO: Can this be deterministically parallelised?
-        if let Some(mut rng) = rng.as_mut() {
-            self.dataset_indices.shuffle(&mut rng);
-        }
+        self.shuffle_whole_dataset()?;
 
+        Ok(())
+    }
+
+    pub fn shuffle_whole_dataset(&mut self) -> Result<(), DataLoaderError> {
+        let rng = self.config.rng.as_mut().ok_or(DataLoaderError::RngNotSet)?;
+        self.dataset_indices.shuffle(rng);
+        Ok(())
+    }
+
+    pub fn shuffle_individual_datasets(&mut self) -> Result<(), DataLoaderError> {
+        let (train_size, test_size, _) = self.get_split_sizes();
+
+        let rng = self.config.rng.as_mut().ok_or(DataLoaderError::RngNotSet)?;
+
+        self.dataset_indices[0..train_size].shuffle(rng);
+        self.dataset_indices[train_size..train_size + test_size].shuffle(rng);
+        self.dataset_indices[train_size + test_size..].shuffle(rng);
         Ok(())
     }
 
@@ -241,4 +255,3 @@ impl DataLoaderForImages {
         ImageBatchIterator::new(self, split)
     }
 }
-
