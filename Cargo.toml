@@ -8,9 +8,10 @@ lto = true
 
 [dependencies]
 crossbeam-channel = "0.5.13"
-cudarc = { version = "0.11.6", features = ["cuda-12050"]}
-image = { version = "0.25.1" , default-features = false, features = ["default-formats"] }
+cudarc = { version = "0.12.1", features = ["cuda-12060"]}
+image = { version = "0.25.5" , default-features = false, features = ["default-formats"] }
 num_cpus = "1.16.0"
 rand = "0.8.5"
 rayon = "1.10.0"
-thiserror = "1.0.61"
+thiserror = "2.0.3"
+vulkano = "0.34.1"

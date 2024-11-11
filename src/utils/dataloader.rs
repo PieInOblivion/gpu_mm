@@ -7,10 +7,10 @@ use rayon::slice::ParallelSliceMut;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use super::dataloader_config::DataLoaderConfig;
 use super::dataloader_error::DataLoaderError;
-use super::dataloader_iter::ImageBatchIterator;
 
 // TODO: ImageBatches needs to load both buffers if they are both empty
 // TODO: Simplify the external and internal usage of these functions
@@ -34,39 +34,6 @@ pub enum DatasetSplit {
     Train,
     Test,
     Validation,
-}
-
-pub struct ImageBatch {
-    pub images: Pin<Box<[u8]>>,
-    pub images_per_batch: usize,
-    pub bytes_per_image: usize,
-}
-
-impl ImageBatch {
-    pub fn new(dl: &DataLoaderForImages) -> ImageBatch {
-        let bytes_per_image = dl.image_width * dl.image_height * dl.image_bytes_per_pixel;
-        let total_bytes = bytes_per_image as usize * dl.config.batch_size;
-
-        let images = vec![0u8; total_bytes].into_boxed_slice();
-
-        ImageBatch {
-            images: Pin::new(images),
-            images_per_batch: dl.config.batch_size,
-            bytes_per_image: bytes_per_image as usize,
-        }
-    }
-
-    pub fn load_raw_image_data(&mut self, paths: Vec<PathBuf>) {
-        self.images
-            .par_chunks_exact_mut(self.bytes_per_image)
-            .zip(paths.par_iter())
-            .for_each(|(chunk, path)| Self::path_to_buffer_copy(path, chunk));
-    }
-
-    fn path_to_buffer_copy(path: &PathBuf, slice: &mut [u8]) {
-        let img = image::open(path).unwrap();
-        slice.copy_from_slice(img.as_bytes());
-    }
 }
 
 pub struct DataLoaderForImages {
@@ -143,7 +110,7 @@ impl DataLoaderForImages {
             if self.config.shuffle_seed.is_none() {
                 self.config.shuffle_seed = Some(rand::thread_rng().gen());
             }
-            Some(StdRng::seed_from_u64(self.config.shuffle_seed.unwrap()))
+            Some(Arc::new(Mutex::new(StdRng::seed_from_u64(self.config.shuffle_seed.unwrap()))))
         } else {
             None
         };
@@ -154,19 +121,25 @@ impl DataLoaderForImages {
     }
 
     pub fn shuffle_whole_dataset(&mut self) -> Result<(), DataLoaderError> {
-        let rng = self.config.rng.as_mut().ok_or(DataLoaderError::RngNotSet)?;
-        self.dataset_indices.shuffle(rng);
+        let mut rng = self.config.rng.as_ref()
+            .ok_or(DataLoaderError::RngNotSet)?
+            .lock()
+            .map_err(|_| DataLoaderError::RngLockError)?;
+        self.dataset_indices.shuffle(&mut *rng);
         Ok(())
     }
 
     pub fn shuffle_individual_datasets(&mut self) -> Result<(), DataLoaderError> {
         let (train_size, test_size, _) = self.get_split_sizes();
 
-        let rng = self.config.rng.as_mut().ok_or(DataLoaderError::RngNotSet)?;
+        let mut rng = self.config.rng.as_ref()
+            .ok_or(DataLoaderError::RngNotSet)?
+            .lock()
+            .map_err(|_| DataLoaderError::RngLockError)?;
 
-        self.dataset_indices[0..train_size].shuffle(rng);
-        self.dataset_indices[train_size..train_size + test_size].shuffle(rng);
-        self.dataset_indices[train_size + test_size..].shuffle(rng);
+        self.dataset_indices[0..train_size].shuffle(&mut *rng);
+        self.dataset_indices[train_size..train_size + test_size].shuffle(&mut *rng);
+        self.dataset_indices[train_size + test_size..].shuffle(&mut *rng);
         Ok(())
     }
 
@@ -216,7 +189,7 @@ impl DataLoaderForImages {
         }
 
         let batch = self.dataset_indices[start_index + batch_start..start_index + batch_end]
-            .iter()
+            .par_iter()
             .map(|&idx| PathBuf::from(&self.dir).join(&*self.dataset[idx]))
             .collect();
 
@@ -231,9 +204,5 @@ impl DataLoaderForImages {
         self.image_channels = img.color().channel_count() as u32;
         self.image_bytes_per_pixel = img.color().bytes_per_pixel() as u32;
         Ok(())
-    }
-
-    pub fn iter(&self, split: DatasetSplit) -> ImageBatchIterator {
-        ImageBatchIterator::new(self, split)
     }
 }

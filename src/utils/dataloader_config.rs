@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use rand::rngs::StdRng;
 use rayon::ThreadPoolBuilder;
 
@@ -12,7 +14,7 @@ pub struct DataLoaderConfig {
     pub sort_dataset: bool,
     pub shuffle: bool,
     pub shuffle_seed: Option<u64>,
-    pub rng: Option<StdRng>,
+    pub rng: Option<Arc<Mutex<StdRng>>>,
     pub drop_last: bool,
 }
 

@@ -1,13 +1,13 @@
 use utils::{
-    dataloader::{DataLoaderForImages, DatasetSplit, ImageBatch},
+    dataloader::{DataLoaderForImages, DatasetSplit},
     dataloader_config::DataLoaderConfig,
     dataloader_info::print_dataset_info,
-    dataloader_iter::ParallelBufferIterator,
+    dataloader_iter::ParallelDataLoaderIterator,
 };
 
 mod utils;
 
-use std::thread;
+use std::sync::Arc;
 
 // use cudarc::driver::result;
 // use std::sync::{Arc, RwLock};
@@ -21,35 +21,11 @@ fn main() {
     .build()
     .unwrap();
 
-    let dl =
-        DataLoaderForImages::new("/home/lucas/Documents/mnist_png/test/0", Some(config)).unwrap();
+    let dl = Arc::new(DataLoaderForImages::new("/home/lucas/Documents/mnist_png/test/0", Some(config)).unwrap());
 
     print_dataset_info(&dl);
 
-    for batch_of_paths in dl.iter(DatasetSplit::Test) {
-        dbg!(batch_of_paths);
-    }
-
-    let mut ib = ImageBatch::new(&dl);
-    ib.load_raw_image_data(dl.next_batch_of_paths(DatasetSplit::Test, 1).unwrap());
-    println!("{:?}", ib.images);
-
-    let mut counter = 0;
-    let iter = ParallelBufferIterator::new(move || {
-        if counter >= 50 {
-            None
-        } else {
-            // Simulate some loading time
-            thread::sleep(std::time::Duration::from_millis(1000));
-            let batch: Vec<i32> = (counter..counter + 10).collect();
-            counter += 10;
-            Some(batch)
-        }
-    });
-
-    for batch in iter {
-        println!("Processing batch: {:?}", batch);
-        // Simulate some processing time
-        // thread::sleep(std::time::Duration::from_millis(50));
+    for batch in dl.par_iter(DatasetSplit::Validation) {
+        dbg!(batch);
     }
 }

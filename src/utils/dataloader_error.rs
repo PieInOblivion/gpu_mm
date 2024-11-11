@@ -22,4 +22,7 @@ pub enum DataLoaderError {
 
     #[error("Random number generator (shuffle_seed) not set or enabled")]
     RngNotSet,
+
+    #[error("Failed to acquire lock on RNG")]
+    RngLockError,
 }
