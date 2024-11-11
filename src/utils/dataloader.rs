@@ -7,7 +7,6 @@ use rayon::slice::ParallelSliceMut;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Mutex;
 
 use super::dataloader_config::DataLoaderConfig;
 use super::dataloader_error::DataLoaderError;
@@ -26,6 +25,10 @@ use super::dataloader_iter::ImageBatchIterator;
 // NOTE: Always drop_last for now, as the end of the pixel buffer will include
 //       last batches image data
 
+// NOTE: Data represented as enum?
+//  Use associated functions to move data around.
+// General functions to manipulate data can then be used
+
 #[derive(Copy, Clone)]
 pub enum DatasetSplit {
     Train,
@@ -33,49 +36,28 @@ pub enum DatasetSplit {
     Validation,
 }
 
-pub struct ImageBatches {
+pub struct ImageBatch {
     pub images: Pin<Box<[u8]>>,
-    pub images_mutex: Mutex<()>,
-    pub images_loaded: bool,
-    pub prefetched_images: Pin<Box<[u8]>>,
-    pub prefetch_mutex: Mutex<()>,
-    pub prefetched_images_loaded: bool,
-    pub out_use_prefetch_next: bool,
     pub images_per_batch: usize,
     pub bytes_per_image: usize,
 }
 
-impl ImageBatches {
-    pub fn new(dl: &DataLoaderForImages) -> ImageBatches {
+impl ImageBatch {
+    pub fn new(dl: &DataLoaderForImages) -> ImageBatch {
         let bytes_per_image = dl.image_width * dl.image_height * dl.image_bytes_per_pixel;
         let total_bytes = bytes_per_image as usize * dl.config.batch_size;
 
         let images = vec![0u8; total_bytes].into_boxed_slice();
-        let prefetched_images = vec![0u8; total_bytes].into_boxed_slice();
 
-        ImageBatches {
+        ImageBatch {
             images: Pin::new(images),
-            images_mutex: Mutex::new(()),
-            images_loaded: false,
-            prefetched_images: Pin::new(prefetched_images),
-            prefetch_mutex: Mutex::new(()),
-            prefetched_images_loaded: false,
-            out_use_prefetch_next: false,
             images_per_batch: dl.config.batch_size,
             bytes_per_image: bytes_per_image as usize,
         }
     }
 
     pub fn load_raw_image_data(&mut self, paths: Vec<PathBuf>) {
-        let (buffer, mutex) = if self.out_use_prefetch_next {
-            (&mut self.prefetched_images, &self.prefetch_mutex)
-        } else {
-            (&mut self.images, &self.images_mutex)
-        };
-
-        let _mutex_lock = mutex.lock().unwrap();
-
-        buffer
+        self.images
             .par_chunks_exact_mut(self.bytes_per_image)
             .zip(paths.par_iter())
             .for_each(|(chunk, path)| Self::path_to_buffer_copy(path, chunk));

@@ -1,10 +1,13 @@
 use utils::{
-    dataloader::{DataLoaderForImages, DatasetSplit, ImageBatches},
+    dataloader::{DataLoaderForImages, DatasetSplit, ImageBatch},
     dataloader_config::DataLoaderConfig,
     dataloader_info::print_dataset_info,
+    dataloader_iter::ParallelBufferIterator,
 };
 
 mod utils;
+
+use std::thread;
 
 // use cudarc::driver::result;
 // use std::sync::{Arc, RwLock};
@@ -27,7 +30,26 @@ fn main() {
         dbg!(batch_of_paths);
     }
 
-    let mut ib = ImageBatches::new(&dl);
+    let mut ib = ImageBatch::new(&dl);
     ib.load_raw_image_data(dl.next_batch_of_paths(DatasetSplit::Test, 1).unwrap());
     println!("{:?}", ib.images);
+
+    let mut counter = 0;
+    let iter = ParallelBufferIterator::new(move || {
+        if counter >= 50 {
+            None
+        } else {
+            // Simulate some loading time
+            thread::sleep(std::time::Duration::from_millis(1000));
+            let batch: Vec<i32> = (counter..counter + 10).collect();
+            counter += 10;
+            Some(batch)
+        }
+    });
+
+    for batch in iter {
+        println!("Processing batch: {:?}", batch);
+        // Simulate some processing time
+        // thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
