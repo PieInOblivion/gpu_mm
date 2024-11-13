@@ -28,7 +28,7 @@ pub fn print_dataset_info(dl: &DataLoaderForImages) {
     println!("  Batches: {}", train_batches);
     println!(
         "  Last batch size: {}",
-        if train_batch_remainder > 0 {
+        if train_batch_remainder >= 0 {
             train_batch_remainder
         } else {
             dl.config.batch_size
@@ -44,7 +44,7 @@ pub fn print_dataset_info(dl: &DataLoaderForImages) {
     println!("  Batches: {}", test_batches);
     println!(
         "  Last batch size: {}",
-        if test_batch_remainder > 0 {
+        if test_batch_remainder >= 0 {
             test_batch_remainder
         } else {
             dl.config.batch_size
@@ -60,7 +60,7 @@ pub fn print_dataset_info(dl: &DataLoaderForImages) {
     println!("  Batches: {}", val_batches);
     println!(
         "  Last batch size: {}",
-        if val_batch_remainder > 0 {
+        if val_batch_remainder >= 0 {
             val_batch_remainder
         } else {
             dl.config.batch_size

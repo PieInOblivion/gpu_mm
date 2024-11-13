@@ -1,6 +1,6 @@
-use std::{pin::Pin, sync::Arc, thread};
+use std::{pin::Pin, sync::{atomic::{AtomicUsize, Ordering}, Arc}, thread};
 
-use crossbeam_channel::{Receiver, bounded};
+use crossbeam_channel::{bounded, Receiver, Sender};
 
 use super::{
     dataloader::{DataLoaderForImages, DatasetSplit},
@@ -16,30 +16,55 @@ pub struct ParallelImageBatchIterator {
 impl ParallelImageBatchIterator {
     fn new(dl: Arc<DataLoaderForImages>, split: DatasetSplit) -> Self {
         let (sender, receiver) = bounded(1);
-
         let pinned_buffer = Pin::new(vec![0u8; dl.image_total_bytes_per_batch].into_boxed_slice());
-
-        let mut current_batch_index = 0;
-
-        thread::spawn(move || {
-            let mut batch = ImageBatch::new(&dl);
+        
+        let batch_counter = Arc::new(AtomicUsize::new(0));
+        let active_workers = Arc::new(AtomicUsize::new(dl.config.num_of_batch_prefetches));
+        
+        for _ in 0..dl.config.num_of_batch_prefetches {
+            let dl_clone = Arc::clone(&dl);
+            let sender_clone = sender.clone();
+            let counter_clone = Arc::clone(&batch_counter);
+            let workers_clone = Arc::clone(&active_workers);
             
-            while let Some(paths) = dl.next_batch_of_paths(split, current_batch_index) {
-                batch.load_raw_image_data(&paths);
-                
-                if sender.send(Some(batch.clone())).is_err() {
-                    break;
-                }
-
-                current_batch_index += 1;
-            }
-
-            let _ = sender.send(None);
-        });
+            thread::spawn(move || {
+                Self::prefetch_worker(dl_clone, split, sender_clone, counter_clone, workers_clone);
+            });
+        }
 
         ParallelImageBatchIterator { 
             receiver,
             pinned_buffer,
+        }
+    }
+
+    fn prefetch_worker(
+        dl: Arc<DataLoaderForImages>,
+        split: DatasetSplit,
+        sender: Sender<Option<ImageBatch>>,
+        batch_counter: Arc<AtomicUsize>,
+        active_workers: Arc<AtomicUsize>,
+    ) {
+        let mut batch = ImageBatch::new(&dl);
+
+        loop {
+            let current_batch = batch_counter.fetch_add(1, Ordering::SeqCst);
+            
+            match dl.next_batch_of_paths(split, current_batch) {
+                Some(paths) => {
+                    batch.load_raw_image_data(&paths);
+                    println!("BATCH LOADED AND SENT: {}", current_batch);
+                    if sender.send(Some(batch.clone())).is_err() {
+                        break;
+                    }
+                }
+                None => {
+                    if active_workers.fetch_sub(1, Ordering::SeqCst) == 1 {
+                        let _ = sender.send(None);
+                    }
+                    break;
+                }
+            }
         }
     }
 }

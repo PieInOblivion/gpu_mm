@@ -7,32 +7,30 @@ use utils::{
 
 mod utils;
 
-use std::sync::Arc;
-
-// use cudarc::driver::result;
-// use std::sync::{Arc, RwLock};
+use std::{sync::Arc, thread, time::Duration};
 
 fn main() {
     let config = DataLoaderConfig {
         shuffle_seed: Some(727),
-        batch_size: 2,
+        batch_size: 64,
         train_ratio: 1.0,
         test_ratio: 0.0,
         drop_last: false,
+        num_of_batch_prefetches: 4,
         ..Default::default()
     }
     .build()
     .unwrap();
 
-    let dl = Arc::new(DataLoaderForImages::new("/home/lucas/Documents/test_images", Some(config)).unwrap());
+    let dl = Arc::new(DataLoaderForImages::new("/home/lucas/Documents/mnist_png/test/0", Some(config)).unwrap());
 
     print_dataset_info(&dl);
-
+    // TODO: Fix return ordering. Currently loads well, but returns batches out of order
     for batch in dl.par_iter(DatasetSplit::Train) {
+        println!();
         println!("BATCH LEN!: {:?}", batch.images_this_batch);
         println!("BATCH DATALEN!: {:?}", batch.image_data.len());
         println!("ADDR: {:p}", &batch.images_this_batch);
-        println!("{:?}", batch.image_data);
-        // Might not need the extra work, as the iterator return is always the same memory location? What do I need to do to make it change?
+        thread::sleep(Duration::from_millis(4000));
     }
 }
