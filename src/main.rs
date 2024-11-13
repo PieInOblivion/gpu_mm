@@ -28,6 +28,7 @@ fn main() {
     // TODO: Fix return ordering. Currently loads well, but returns batches out of order
     for batch in dl.par_iter(DatasetSplit::Train) {
         println!();
+        println!("BATCH NUM: {:?}", batch.batch_number);
         println!("BATCH LEN!: {:?}", batch.images_this_batch);
         println!("BATCH DATALEN!: {:?}", batch.image_data.len());
         println!("ADDR: {:p}", &batch.images_this_batch);

@@ -40,4 +40,5 @@ pub struct IteratorImageBatch {
     pub image_data: &'static [u8],
     pub images_this_batch: usize,
     pub bytes_per_image: usize,
+    pub batch_number: usize, 
 }
