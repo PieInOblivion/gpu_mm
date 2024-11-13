@@ -6,9 +6,9 @@ use rayon::ThreadPoolBuilder;
 use super::dataloader_error::DataLoaderError;
 
 pub struct DataLoaderConfig {
-    pub threads: usize,
+    pub image_loading_threads: usize,
     pub batch_size: usize,
-    pub batch_prefetch: bool,
+    pub batch_prefetch: usize,
     pub train_ratio: f32,
     pub test_ratio: f32,
     pub sort_dataset: bool,
@@ -20,12 +20,12 @@ pub struct DataLoaderConfig {
 
 impl DataLoaderConfig {
     pub fn build(mut self) -> Result<Self, DataLoaderError> {
-        if self.threads == 0 {
-            self.threads = num_cpus::get();
+        if self.image_loading_threads == 0 {
+            self.image_loading_threads = num_cpus::get();
         }
 
         ThreadPoolBuilder::new()
-            .num_threads(self.threads)
+            .num_threads(self.image_loading_threads)
             .build_global()?;
 
         check_split_ratios(self.train_ratio, self.test_ratio)?;
@@ -37,9 +37,9 @@ impl DataLoaderConfig {
 impl Default for DataLoaderConfig {
     fn default() -> Self {
         Self {
-            threads: num_cpus::get(),
+            image_loading_threads: num_cpus::get(),
             batch_size: 32,
-            batch_prefetch: true,
+            batch_prefetch: 1,
             train_ratio: 0.8,
             test_ratio: 0.1,
             sort_dataset: false,

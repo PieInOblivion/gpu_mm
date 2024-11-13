@@ -45,6 +45,8 @@ pub struct DataLoaderForImages {
     pub image_height: u32,
     pub image_channels: u32,
     pub image_bytes_per_pixel: u32,
+    pub image_bytes_per_image: usize,
+    pub image_total_bytes_per_batch: usize,
     pub config: DataLoaderConfig,
 }
 
@@ -69,6 +71,8 @@ impl DataLoaderForImages {
             image_height: 0,
             image_channels: 0,
             image_bytes_per_pixel: 0,
+            image_bytes_per_image: 0,
+            image_total_bytes_per_batch: 0,
             config: config.unwrap_or_default(),
         };
 
@@ -203,6 +207,9 @@ impl DataLoaderForImages {
         self.image_height = img.height();
         self.image_channels = img.color().channel_count() as u32;
         self.image_bytes_per_pixel = img.color().bytes_per_pixel() as u32;
+
+        self.image_bytes_per_image = self.image_width as usize * self.image_height as usize * self.image_bytes_per_pixel as usize;
+        self.image_total_bytes_per_batch = self.image_bytes_per_image * self.config.batch_size;
         Ok(())
     }
 }
