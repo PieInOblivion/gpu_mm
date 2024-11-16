@@ -75,7 +75,7 @@ impl DataLoaderForImages {
     }
 
     fn load_dataset(&mut self) -> Result<(), DataLoaderError> {
-        // TODO: benchmark .par_bridge() from rayon. Also does not guarantee order of original iterator
+        // TODO: Use thread pool and batch work
         self.dataset = std::fs::read_dir(&self.dir)?
             .filter_map(Result::ok)
             .filter(|entry| self.is_valid_extension(&entry.path()))

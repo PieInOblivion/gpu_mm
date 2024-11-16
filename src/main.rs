@@ -15,7 +15,6 @@ fn main() {
         train_ratio: 1.0,
         test_ratio: 0.0,
         drop_last: false,
-        prefetch_threads: 4,
         prefetch_count: 4,
         ..Default::default()
     }
