@@ -1,108 +1,122 @@
-use std::{collections::VecDeque, pin::Pin, sync::{atomic::{AtomicUsize, Ordering}, Arc}, thread};
+use std::{collections::VecDeque, pin::Pin, sync::Arc};
 
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crate::thread_pool::worker::{WorkType, WorkFuture, WorkResult};
 
 use super::{
-    dataloader::{DataLoaderForImages, DatasetSplit},
-    image_batch::{ImageBatch, IteratorImageBatch}
+    dataloader_for_images::{DataLoaderForImages, DatasetSplit},
+    image_batch::IteratorImageBatch,
 };
 
-
-pub struct ParallelImageBatchIterator {
-    receiver: Receiver<Option<(usize, ImageBatch)>>,
-    pinned_buffer: Pin<Box<[u8]>>,
-    next_batch: usize,
-    pending_batches: VecDeque<(usize, ImageBatch)>,
+struct PendingBatch {
+    future: WorkFuture,
+    batch_number: usize,
 }
 
-impl ParallelImageBatchIterator {
-    fn new(dl: Arc<DataLoaderForImages>, split: DatasetSplit) -> Self {
-        let (sender, receiver) = bounded(1);
-        let pinned_buffer = Pin::new(vec![0u8; dl.image_total_bytes_per_batch].into_boxed_slice());
-        
-        let batch_counter = Arc::new(AtomicUsize::new(0));
-        let active_workers = Arc::new(AtomicUsize::new(dl.config.num_of_batch_prefetches));
-        
-        for _ in 0..dl.config.num_of_batch_prefetches {
-            let dl_clone = Arc::clone(&dl);
-            let sender_clone = sender.clone();
-            let counter_clone = Arc::clone(&batch_counter);
-            let workers_clone = Arc::clone(&active_workers);
-            
-            thread::spawn(move || {
-                Self::prefetch_worker(dl_clone, split, sender_clone, counter_clone, workers_clone);
-            });
-        }
+pub struct MultithreadedImageBatchIterator {
+    dataloader: Arc<DataLoaderForImages>,
+    split: DatasetSplit,
+    pinned_buffer: Pin<Box<[u8]>>,
+    next_batch: usize,
+    pending_futures: VecDeque<PendingBatch>,
+    max_pending: usize,
+}
 
-        ParallelImageBatchIterator { 
-            receiver,
-            pinned_buffer,
+impl MultithreadedImageBatchIterator {
+    fn new(dl: Arc<DataLoaderForImages>, split: DatasetSplit) -> Self {
+        let max_pending = dl.config.prefetch_count;
+        let mut iterator = MultithreadedImageBatchIterator { 
+            dataloader: Arc::clone(&dl),
+            split,
+            pinned_buffer: Pin::new(vec![0u8; dl.image_total_bytes_per_batch].into_boxed_slice()),
             next_batch: 0,
-            pending_batches: VecDeque::new(),
-        }
+            pending_futures: VecDeque::with_capacity(max_pending),
+            max_pending,
+        };
+
+        iterator.request_next_batches();
+
+        iterator
     }
 
-    fn prefetch_worker(
-        dl: Arc<DataLoaderForImages>,
-        split: DatasetSplit,
-        sender: Sender<Option<(usize, ImageBatch)>>,
-        batch_counter: Arc<AtomicUsize>,
-        active_workers: Arc<AtomicUsize>,
-    ) {
-        let mut batch = ImageBatch::new(&dl);
-
-        loop {
-            let current_batch = batch_counter.fetch_add(1, Ordering::SeqCst);
+    fn request_next_batches(&mut self) {
+        while self.pending_futures.len() < self.max_pending {
+            let batch_number = self.next_batch + self.pending_futures.len();
             
-            match dl.next_batch_of_paths(split, current_batch) {
-                Some(paths) => {
-                    batch.load_raw_image_data(&paths);
-                    println!("BATCH LOADED AND SENT: {}", current_batch);
-                    if sender.send(Some((current_batch, batch.clone()))).is_err() {
-                        break;
-                    }
-                }
-                None => {
-                    if active_workers.fetch_sub(1, Ordering::SeqCst) == 1 {
-                        let _ = sender.send(None);
-                    }
-                    break;
-                }
+            if let Some(paths) = self.dataloader.next_batch_of_paths(self.split, batch_number) {
+                let work = WorkType::LoadImageBatch {
+                    dataloader: Arc::clone(&self.dataloader),
+                    batch_number,
+                    paths,
+                };
+                
+                let future = self.dataloader.config.thread_pool.submit_work(work);
+                self.pending_futures.push_back(PendingBatch {
+                    future,
+                    batch_number,
+                });
+            } else {
+                break
             }
         }
     }
-}
 
-impl Iterator for ParallelImageBatchIterator {
-    type Item = IteratorImageBatch;
+    fn wait_for_next_batch(&mut self) -> Option<(usize, IteratorImageBatch)> {
+        let position = self.pending_futures.iter()
+            .position(|pending| pending.batch_number == self.next_batch)?;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.receiver.recv().ok()? {
-            Some((batch_num, batch)) => {
-                //print!("{:?}", batch.image_data);
+        let PendingBatch { future, batch_number } = self.pending_futures.remove(position)?;
+
+        match future.wait() {
+            WorkResult::LoadImageBatch { batch_number: received_batch, batch } => {
+                debug_assert_eq!(batch_number, received_batch, 
+                    "Batch number mismatch: expected {}, got {}", 
+                    batch_number, received_batch);
+
                 self.pinned_buffer.copy_from_slice(&batch.image_data);
-                Some(IteratorImageBatch {
+                
+                Some((batch_number, IteratorImageBatch {
                     image_data: unsafe {
                         std::slice::from_raw_parts(
                             self.pinned_buffer.as_ref().as_ptr(),
-                            self.pinned_buffer.len())
-                        },
+                            self.pinned_buffer.len()
+                        )
+                    },
                     images_this_batch: batch.images_this_batch,
                     bytes_per_image: batch.bytes_per_image,
-                    batch_number: batch_num,
-                })
-            }
-            None => None,
+                    batch_number,
+                }))
+            },
+            _ => unreachable!("Unexpected work result type"),
         }
     }
 }
 
-pub trait ParallelDataLoaderIterator {
-    fn par_iter(self: Arc<Self>, split: DatasetSplit) -> ParallelImageBatchIterator;
+impl Iterator for MultithreadedImageBatchIterator {
+    type Item = IteratorImageBatch;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((batch_number, batch)) = self.wait_for_next_batch() {
+            debug_assert_eq!(batch_number, self.next_batch,
+                "Iterator sequence error: expected batch {}, got {}", 
+                self.next_batch, batch_number);
+            
+            self.next_batch += 1;
+            
+            self.request_next_batches();
+
+            Some(batch)
+        } else {
+            None
+        }
+    }
 }
 
-impl ParallelDataLoaderIterator for DataLoaderForImages {
-    fn par_iter(self: Arc<Self>, split: DatasetSplit) -> ParallelImageBatchIterator {
-        ParallelImageBatchIterator::new(self, split)
+pub trait MultithreadedDataLoaderIterator {
+    fn par_iter(self: Arc<Self>, split: DatasetSplit) -> MultithreadedImageBatchIterator;
+}
+
+impl MultithreadedDataLoaderIterator for DataLoaderForImages {
+    fn par_iter(self: Arc<Self>, split: DatasetSplit) -> MultithreadedImageBatchIterator {
+        MultithreadedImageBatchIterator::new(self, split)
     }
 }

@@ -1,13 +1,20 @@
+use std::num::NonZero;
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 use rand::rngs::StdRng;
-use rayon::ThreadPoolBuilder;
 
-use super::dataloader_error::DataLoaderError;
+use crate::thread_pool::thread_pool::ThreadPool;
+use crate::utils::dataloader_error::DataLoaderError;
 
+// TODO: Make bad values impossible using NonZeroUsize etc
+// Downside is it becomes annoying to use having to .into() and NonZeroUsize::new everywhere...
+// Mayber just assert!() instead?
+// TODO: Clean up names
 pub struct DataLoaderConfig {
     pub data_loading_threads: usize,
-    pub num_of_batch_prefetches: usize,
+    pub prefetch_threads: usize,
+    pub prefetch_count: usize,
     pub batch_size: usize,
     pub train_ratio: f32,
     pub test_ratio: f32,
@@ -16,18 +23,11 @@ pub struct DataLoaderConfig {
     pub shuffle_seed: Option<u64>,
     pub rng: Option<Arc<Mutex<StdRng>>>,
     pub drop_last: bool,
+    pub thread_pool: ThreadPool
 }
 
 impl DataLoaderConfig {
-    pub fn build(mut self) -> Result<Self, DataLoaderError> {
-        if self.data_loading_threads == 0 {
-            self.data_loading_threads = num_cpus::get();
-        }
-
-        ThreadPoolBuilder::new()
-            .num_threads(self.data_loading_threads)
-            .build_global()?;
-
+    pub fn build(self) -> Result<Self, DataLoaderError> {
         check_split_ratios(self.train_ratio, self.test_ratio)?;
 
         Ok(self)
@@ -36,10 +36,13 @@ impl DataLoaderConfig {
 
 impl Default for DataLoaderConfig {
     fn default() -> Self {
+        let num_cpus = thread::available_parallelism().map(NonZero::get).unwrap_or(1);
+        
         Self {
-            data_loading_threads: num_cpus::get(),
+            data_loading_threads: num_cpus,
+            prefetch_threads: 4,
+            prefetch_count: 4,
             batch_size: 32,
-            num_of_batch_prefetches: 1,
             train_ratio: 0.8,
             test_ratio: 0.1,
             sort_dataset: false,
@@ -47,6 +50,7 @@ impl Default for DataLoaderConfig {
             shuffle_seed: None,
             rng: None,
             drop_last: true,
+            thread_pool: ThreadPool::new(num_cpus)
         }
     }
 }

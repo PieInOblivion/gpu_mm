@@ -1,4 +1,4 @@
-use super::dataloader::DataLoaderForImages;
+use super::dataloader_for_images::DataLoaderForImages;
 
 pub fn print_dataset_info(dl: &DataLoaderForImages) {
     let total_size = dl.dataset.len();

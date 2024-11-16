@@ -2,32 +2,20 @@ use image;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use rayon::slice::ParallelSliceMut;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use super::dataloader_config::DataLoaderConfig;
 use super::dataloader_error::DataLoaderError;
-
-// TODO: ImageBatches needs to load both buffers if they are both empty
-// TODO: Simplify the external and internal usage of these functions
-// TODO: Condvar solution for prefetching?
-// TODO: Combine ImageBatches and DataLoaderForImages
+use crate::thread_pool::worker::{WorkType, WorkResult};
 
 // TODO: Image label support:
 //       - Built in csv support
 //       - One hot encoding
 //       - BYO array support
 
-// NOTE: Always drop_last for now, as the end of the pixel buffer will include
-//       last batches image data
-
-// NOTE: Data represented as enum?
-//  Use associated functions to move data around.
-// General functions to manipulate data can then be used
+// NOTE: The end of the last batch, if partial, pixel buffer will include last batches image data
 
 #[derive(Copy, Clone)]
 pub enum DatasetSplit {
@@ -80,6 +68,10 @@ impl DataLoaderForImages {
         loader.scan_first_image()?;
 
         Ok(loader)
+    }
+
+    pub fn new_arc(dir: &str, config: Option<DataLoaderConfig>) -> Result<Arc<Self>, DataLoaderError> {
+        Ok(Arc::new(Self::new(dir, config)?))
     }
 
     fn load_dataset(&mut self) -> Result<(), DataLoaderError> {
@@ -162,7 +154,7 @@ impl DataLoaderForImages {
         (train_size, test_size, val_size)
     }
 
-    // When finished a loop, allow for reshuffling to be an option
+    // TODO: When finished a loop, allow for reshuffling to be an option
     pub fn next_batch_of_paths(
         &self,
         split: DatasetSplit,
@@ -192,12 +184,22 @@ impl DataLoaderForImages {
             return None;
         }
 
-        let batch = self.dataset_indices[start_index + batch_start..start_index + batch_end]
-            .par_iter()
-            .map(|&idx| PathBuf::from(&self.dir).join(&*self.dataset[idx]))
+        let indices = &self.dataset_indices[start_index + batch_start..start_index + batch_end];
+
+        let work_items = indices.iter().map(|&idx| WorkType::BuildPath {
+            base_dir: self.dir.clone(),
+            filename: self.dataset[idx].clone(),
+        }).collect();
+
+        let batch = self.config.thread_pool.submit_batch(work_items);
+        let paths = batch.wait().into_iter()
+            .map(|r| match r {
+                WorkResult::BuildPath{path} => path,
+                _ => unreachable!(),
+            })
             .collect();
 
-        Some(batch)
+        Some(paths)
     }
 
     fn scan_first_image(&mut self) -> Result<(), DataLoaderError> {

@@ -1,8 +1,3 @@
-use std::sync::Arc;
-
-use cudarc::driver::result::DriverError;
-use cudarc::driver::safe::CudaDevice;
-use cudarc::driver::safe::CudaSlice;
 // use cudarc::driver::sys::CUarray_format_enum;
 
 // struct init
@@ -40,23 +35,9 @@ pub struct MultiplyTensorQueue {
 
 #[derive(Debug)]
 pub struct GPU {
-    device: Arc<CudaDevice>,
-    mem: Vec<CudaSlice<f64>>,
+
 }
 
 impl GPU {
-    // No need for Option wrap, as struct is useless if
-    // a GPU cannot be initialised.
-    pub fn new(gpu_num: usize) -> Result<GPU, DriverError> {
-        Ok(GPU {
-            device: CudaDevice::new(gpu_num)?,
-            mem: Vec::new(),
-        })
-    }
 
-    pub fn sync_copy_to_gpu_mem(self) {
-        // Memory capacity check
-        // Always flatten higher dimensional vecs
-        // CudaDevice::htod_sync_copy(&self.device, [5])
-    }
 }
