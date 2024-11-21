@@ -32,40 +32,34 @@ impl ThreadPool {
 
     pub fn submit_work(&self, work: WorkType) -> WorkFuture {
         let future = WorkFuture::new();
-
+        
         let work_item = WorkItem {
             work,
             future: future.clone(),
         };
+        
+        self.work_queue.submit_work_item(work_item);
 
-        {
-            let mut queue = self.work_queue.queue.lock().unwrap();
-            queue.push_back(work_item);
-            self.work_queue.items_count.fetch_add(1, Ordering::SeqCst);
-        }
         self.work_queue.condvar.notify_one();
-
+        
         future
     }
 
     pub fn submit_batch(&self, work_items: Vec<WorkType>) -> WorkFutureBatch {
         let mut futures = Vec::with_capacity(work_items.len());
+        let mut batch_items = Vec::with_capacity(work_items.len());
         
-        {
-            let mut queue = self.work_queue.queue.lock().unwrap();
+        for work in work_items {
+            let future = WorkFuture::new();
+            futures.push(future.clone());
             
-            for work in work_items {
-                let future = WorkFuture::new();
-                futures.push(future.clone());
-                
-                queue.push_back(WorkItem {
-                    work,
-                    future,
-                });
-            }
-            
-            self.work_queue.items_count.fetch_add(futures.len(), Ordering::SeqCst);
+            batch_items.push(WorkItem {
+                work,
+                future,
+            });
         }
+        
+        self.work_queue.submit_work_batch(batch_items);
         
         for _ in 0..futures.len().min(self.workers.len()) {
             self.work_queue.condvar.notify_one();

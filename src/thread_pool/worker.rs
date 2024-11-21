@@ -80,6 +80,51 @@ pub struct WorkQueue {
     pub condvar: Condvar,
 }
 
+impl WorkQueue {
+    pub fn submit_work_item(&self, work_item: WorkItem) {
+        let mut queue = self.queue.lock().unwrap();
+        queue.push_back(work_item);
+        self.items_count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn submit_work_batch(&self, work_items: Vec<WorkItem>) {
+        let batch_size = work_items.len();
+        {
+            let mut queue = self.queue.lock().unwrap();
+            for work_item in work_items {
+                queue.push_back(work_item);
+            }
+            self.items_count.fetch_add(batch_size, Ordering::SeqCst);
+        }
+    }
+
+    fn wait_and_get_next_work(&self) -> Option<WorkItem> {
+        let mut queue = self.queue.lock().unwrap();
+        while self.items_count.load(Ordering::SeqCst) == 0 {
+            queue = self.condvar.wait(queue).unwrap();
+        }
+
+        self.try_pop_work_item(&mut queue)
+    }
+
+    fn try_get_work(&self) -> Option<WorkItem> {
+        let mut queue = self.queue.lock().unwrap();
+        self.try_pop_work_item(&mut queue)
+    }
+
+    fn try_pop_work_item(&self, queue: &mut VecDeque<WorkItem>) -> Option<WorkItem> {
+        if self.items_count.load(Ordering::SeqCst) > 0 {
+            let item = queue.pop_front();
+            if item.is_some() {
+                self.items_count.fetch_sub(1, Ordering::SeqCst);
+            }
+            item
+        } else {
+            None
+        }
+    }
+}
+
 pub struct WorkItem {
     pub work: WorkType,
     pub future: WorkFuture,
@@ -111,7 +156,7 @@ impl Worker {
     pub fn new(id: usize, work_queue: Arc<WorkQueue>) -> Worker {
         let thread = thread::spawn(move || {
             loop {
-                if let Some(work_item) = Self::wait_and_get_next_work(&work_queue) {
+                if let Some(work_item) = work_queue.wait_and_get_next_work() {
                     Self::process_work(&work_queue, work_item);
                 }
             }
@@ -120,32 +165,6 @@ impl Worker {
         Worker {
             id,
             thread: Some(thread),
-        }
-    }
-
-    fn wait_and_get_next_work(work_queue: &Arc<WorkQueue>) -> Option<WorkItem> {
-        let mut queue = work_queue.queue.lock().unwrap();
-        while work_queue.items_count.load(Ordering::SeqCst) == 0 {
-            queue = work_queue.condvar.wait(queue).unwrap();
-        }
-
-        Self::try_pop_work_item(&mut queue, work_queue)
-    }
-
-    fn try_get_work(work_queue: &Arc<WorkQueue>) -> Option<WorkItem> {
-        let mut queue = work_queue.queue.lock().unwrap();
-        Self::try_pop_work_item(&mut queue, work_queue)
-    }
-
-    fn try_pop_work_item(queue: &mut VecDeque<WorkItem>, work_queue: &Arc<WorkQueue>) -> Option<WorkItem> {
-        if work_queue.items_count.load(Ordering::SeqCst) > 0 {
-            let item = queue.pop_front();
-            if item.is_some() {
-                work_queue.items_count.fetch_sub(1, Ordering::SeqCst);
-            }
-            item
-        } else {
-            None
         }
     }
 
@@ -200,7 +219,7 @@ impl Worker {
         // TODO: Try generalise the work while waiting pattern
         // Process other work while waiting for images to load
         while !work_batch.is_complete() {
-            if let Some(other_work) = Self::try_get_work(work_queue) {
+            if let Some(other_work) = work_queue.try_get_work() {
                 Self::process_work(work_queue, other_work);
             }
         }
