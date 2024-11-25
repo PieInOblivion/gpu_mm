@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::{atomic::{AtomicUsize, Ordering}, Arc, Condvar, Mutex}};
+use std::{collections::VecDeque, sync::{atomic::AtomicUsize, Arc, Condvar, Mutex}};
 
 use super::worker::{WorkType, WorkFutureBatch, WorkFuture, WorkItem, WorkQueue, Worker};
 

@@ -91,6 +91,7 @@ impl WorkQueue {
         let batch_size = work_items.len();
         {
             let mut queue = self.queue.lock().unwrap();
+            queue.reserve(batch_size);
             for work_item in work_items {
                 queue.push_back(work_item);
             }
