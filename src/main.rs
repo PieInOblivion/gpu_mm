@@ -22,10 +22,6 @@ fn main() {
 
     print_dataset_info(&dl);
 
-    let mut imgb_test: ImageBatch = ImageBatch::new(dl.image_total_bytes_per_batch, dl.config.batch_size, dl.image_bytes_per_image);
-    imgb_test.image_data = Box::new([0; 727]);
-    imgb_test.image_data[1] = 6;
-
     for batch in dl.par_iter(DatasetSplit::Train) {
         println!();
         println!("BATCH NUM: {:?}", batch.batch_number);
@@ -35,11 +31,19 @@ fn main() {
         //thread::sleep(Duration::from_millis(4000));
     }
 
+    // GPU testing
+    let mut imgb_test1 = ImageBatch::new(16, 0, 0);
+    imgb_test1.image_data[..16].copy_from_slice(&[10, 20, 30, 15, 20, 30, 15, 10, 10, 20, 30, 15, 20, 30, 15, 10]);
+
+    let mut imgb_test2 = ImageBatch::new(16, 0, 0);
+    imgb_test2.image_data[..16].copy_from_slice(&[1, 2, 3, 1, 2, 3, 1, 1, 1, 2, 3, 1, 2, 3, 1, 1]);
+
     // Initialize GPU
-    let gpu = GPU::new(0).unwrap(); // Use first available GPU
-    let gpu_mem1 = gpu.move_to_gpu(&imgb_test).unwrap();
-    let gpu_mem2 = gpu.move_to_gpu(&imgb_test).unwrap();
-    gpu_mem1.multiply(&gpu_mem2).unwrap();
-    // Multiplied the wrong indicies...
-    print!("{:?}", gpu_mem1.read_to_batch().unwrap().image_data)
+    // NOTE: All GPU computations are f32 for now
+    let gpu = GPU::new(0, &dl.image_color_type).unwrap();
+    let gpu_mem1 = gpu.move_to_gpu_as_f32(&imgb_test1).unwrap();
+    let gpu_mem2 = gpu.move_to_gpu_as_f32(&imgb_test2).unwrap();
+    gpu_mem1.add(&gpu_mem2).unwrap();
+
+    println!("{:?}", gpu_mem1.read_data().unwrap());
 }

@@ -112,11 +112,11 @@ impl Iterator for MultithreadedImageBatchIterator {
 }
 
 pub trait MultithreadedDataLoaderIterator {
-    fn par_iter(self: Arc<Self>, split: DatasetSplit) -> MultithreadedImageBatchIterator;
+    fn par_iter(&self, split: DatasetSplit) -> MultithreadedImageBatchIterator;
 }
 
-impl MultithreadedDataLoaderIterator for DataLoaderForImages {
-    fn par_iter(self: Arc<Self>, split: DatasetSplit) -> MultithreadedImageBatchIterator {
-        MultithreadedImageBatchIterator::new(self, split)
+impl MultithreadedDataLoaderIterator for Arc<DataLoaderForImages> {
+    fn par_iter(&self, split: DatasetSplit) -> MultithreadedImageBatchIterator {
+        MultithreadedImageBatchIterator::new(Arc::clone(self), split)
     }
 }

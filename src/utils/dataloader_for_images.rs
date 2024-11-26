@@ -1,4 +1,5 @@
 use image;
+use image::ColorType;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -16,6 +17,24 @@ use crate::thread_pool::worker::{WorkType, WorkResult};
 //       - BYO array support
 
 // NOTE: The end of the last batch, if partial, pixel buffer will include last batches image data
+
+#[derive(Clone, Copy, Debug)]
+pub enum ComputeFormat {
+    U8,
+    U16,
+    F32,
+}
+
+impl From<ColorType> for ComputeFormat {
+    fn from(color_type: ColorType) -> Self {
+        match color_type {
+            ColorType::L8 | ColorType::La8 | ColorType::Rgb8 | ColorType::Rgba8 => ComputeFormat::U8,
+            ColorType::L16 | ColorType::La16 | ColorType::Rgb16 | ColorType::Rgba16 => ComputeFormat::U16,
+            ColorType::Rgb32F | ColorType::Rgba32F => ComputeFormat::F32,
+            _ => panic!("Unsupported color type"),
+        }
+    }
+}
 
 #[derive(Copy, Clone)]
 pub enum DatasetSplit {
@@ -35,6 +54,8 @@ pub struct DataLoaderForImages {
     pub image_bytes_per_pixel: u32,
     pub image_bytes_per_image: usize,
     pub image_total_bytes_per_batch: usize,
+    pub image_color_type: ColorType,
+    pub image_compute_format: ComputeFormat,
     pub config: DataLoaderConfig,
 }
 
@@ -61,6 +82,8 @@ impl DataLoaderForImages {
             image_bytes_per_pixel: 0,
             image_bytes_per_image: 0,
             image_total_bytes_per_batch: 0,
+            image_color_type: ColorType::Rgb32F,
+            image_compute_format: ComputeFormat::F32,
             config: config.unwrap_or_default(),
         };
 
@@ -209,6 +232,9 @@ impl DataLoaderForImages {
         self.image_height = img.height();
         self.image_channels = img.color().channel_count() as u32;
         self.image_bytes_per_pixel = img.color().bytes_per_pixel() as u32;
+
+        self.image_color_type = img.color();
+        self.image_compute_format = ComputeFormat::from(img.color());
 
         self.image_bytes_per_image = self.image_width as usize * self.image_height as usize * self.image_bytes_per_pixel as usize;
         self.image_total_bytes_per_batch = self.image_bytes_per_image * self.config.batch_size;

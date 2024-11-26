@@ -14,6 +14,11 @@ pub fn print_dataset_info(dl: &DataLoaderForImages) {
     let test_batch_remainder = test_size % dl.config.batch_size;
     let val_batch_remainder = val_size % dl.config.batch_size;
 
+    println!("Image Information:");
+    println!("-------------------");
+    println!("Colour Type: {:?}", dl.image_color_type);
+    println!("Compute Format: {:?}", dl.image_compute_format);
+    println!();
     println!("Dataset Information:");
     println!("-------------------");
     println!("Total size: {}", total_size);

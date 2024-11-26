@@ -2,6 +2,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DataLoaderError {
+    // DataLoader errors
     #[error("Directory not found: {0}")]
     DirectoryNotFound(String),
 
@@ -22,4 +23,6 @@ pub enum DataLoaderError {
 
     #[error("Failed to acquire lock on RNG")]
     RngLockError,
+
+    // TODO: Vulkan/Ash errors
 }
