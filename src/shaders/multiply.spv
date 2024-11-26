@@ -1,0 +1,23 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer InputBuffer1 {
+    uint data1[];
+};
+
+layout(set = 0, binding = 1) buffer InputBuffer2 {
+    uint data2[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint size;
+} constants;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if(idx < constants.size) {
+        // Multiply corresponding elements
+        data1[idx] = uint(float(data1[idx]) * float(data2[idx]) / 255.0);
+    }
+}

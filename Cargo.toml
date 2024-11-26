@@ -10,4 +10,4 @@ lto = true
 image = { version = "0.25.5" , default-features = false, features = ["default-formats"] }
 rand = "0.8.5"
 thiserror = "2.0.3"
-vulkano = "0.34.1"
+ash = "0.38.0"

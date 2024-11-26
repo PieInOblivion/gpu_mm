@@ -234,7 +234,7 @@ impl Worker {
     fn load_single_image(path: PathBuf, start_idx: usize, end_idx: usize, data_ptr: DataPtr) -> WorkResult {
         let img = image::open(path).unwrap();
         let bytes = img.as_bytes();
-        assert_eq!(bytes.len(), end_idx - start_idx);
+        debug_assert_eq!(bytes.len(), end_idx - start_idx);
 
         // SAFETY: Each task has a unique slice range, so no overlapping writes
         // TODO: Benchmark how much faster this is instead of returning each image and having parent thread combine them
