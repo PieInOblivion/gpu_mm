@@ -1,7 +1,8 @@
 use ash::{vk, Entry, Instance, Device};
 use image::ColorType;
 use std::{ffi::CString, ptr, sync::Arc};
-use super::image_batch::ImageBatch;
+
+use crate::utils::image_batch::ImageBatch;
 
 // TODO: Performance gains when needing to multiple tasks in sequence
 // TODO: Generalise the usage a little bit more

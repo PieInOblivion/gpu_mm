@@ -1,8 +1,15 @@
-use utils::{
-    dataloader_config::DataLoaderConfig, dataloader_for_images::{DataLoaderForImages, DatasetSplit}, dataloader_info::print_dataset_info, dataloader_iter::MultithreadedDataLoaderIterator, gpu::{GPU}, image_batch::ImageBatch
-};
+mod gpu;
+use gpu::vk_gpu::GPU;
 
 mod utils;
+use utils::{
+    dataloader_config::DataLoaderConfig,
+    dataloader_for_images::{DataLoaderForImages, DatasetSplit},
+    dataloader_info::print_dataset_info,
+    dataloader_iter::MultithreadedDataLoaderIterator,
+    image_batch::ImageBatch
+};
+
 mod thread_pool;
 
 fn main() {

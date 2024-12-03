@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 
 use super::dataloader_config::DataLoaderConfig;
 use super::dataloader_error::DataLoaderError;
-use crate::thread_pool::worker::{WorkType, WorkResult};
 
 // TODO: Image label support:
 //       - Built in csv support
@@ -209,17 +208,8 @@ impl DataLoaderForImages {
 
         let indices = &self.dataset_indices[start_index + batch_start..start_index + batch_end];
 
-        let work_items = indices.iter().map(|&idx| WorkType::BuildPath {
-            base_dir: self.dir.clone(),
-            filename: self.dataset[idx].clone(),
-        }).collect();
-
-        let batch = self.config.thread_pool.submit_batch(work_items);
-        let paths = batch.wait().into_iter()
-            .map(|r| match r {
-                WorkResult::BuildPath{path} => path,
-                _ => unreachable!(),
-            })
+        let paths = indices.iter()
+            .map(|&idx| self.dir.join(&*self.dataset[idx]))
             .collect();
 
         Some(paths)

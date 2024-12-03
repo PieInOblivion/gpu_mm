@@ -25,10 +25,6 @@ pub enum WorkType {
         end_idx: usize,
         data_ptr: DataPtr,
     },
-    BuildPath {
-        base_dir: PathBuf,
-        filename: Box<str>,
-    }
 }
 
 pub enum WorkResult {
@@ -37,9 +33,6 @@ pub enum WorkResult {
         batch: ImageBatch,
     },
     LoadSingleImage,
-    BuildPath {
-        path: PathBuf
-    },
 }
 
 #[derive(Clone)]
@@ -176,9 +169,6 @@ impl Worker {
             },
             WorkType::LoadSingleImage {path, start_idx, end_idx, data_ptr} => {
                 Self::load_single_image(path, start_idx, end_idx, data_ptr)
-            }
-            WorkType::BuildPath {base_dir, filename} => {
-                WorkResult::BuildPath {path: base_dir.join(&*filename)}
             },
         };
 
