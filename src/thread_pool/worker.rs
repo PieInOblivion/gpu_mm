@@ -183,7 +183,9 @@ impl Worker {
         let mut batch = ImageBatch::new(
             dataloader.image_total_bytes_per_batch,
             dataloader.config.batch_size,
-            dataloader.image_bytes_per_image
+            dataloader.image_bytes_per_image,
+            dataloader.image_color_type,
+            batch_number
         );
 
         batch.images_this_batch = paths.len();
@@ -208,7 +210,7 @@ impl Worker {
         let work_batch = dataloader.config.thread_pool.submit_batch(work_items);
 
         // TODO: Try generalise the work while waiting pattern
-        // Process other work while waiting for images to load
+        // Process other work while waiting for image to load
         while !work_batch.is_complete() {
             if let Some(other_work) = work_queue.try_get_work() {
                 Self::process_work(work_queue, other_work);

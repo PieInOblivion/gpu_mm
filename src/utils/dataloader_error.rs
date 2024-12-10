@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+// TODO: Seperate concerns of error types
 #[derive(Error, Debug)]
 pub enum DataLoaderError {
     // DataLoader errors
@@ -24,5 +25,10 @@ pub enum DataLoaderError {
     #[error("Failed to acquire lock on RNG")]
     RngLockError,
 
-    // TODO: Vulkan/Ash errors
+    // Vulkan/Ash, compute and other errors
+    #[error("Vulkan/Ash error: {0}")]
+    VulkanLoadError(String),
+
+    #[error("Out of memory error: {0}")]
+    OutOfMemory(String),
 }

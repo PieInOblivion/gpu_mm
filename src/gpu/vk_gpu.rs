@@ -1,12 +1,13 @@
 use ash::{vk, Entry, Instance, Device};
-use image::ColorType;
 use std::{ffi::CString, ptr, sync::Arc};
 
-use crate::utils::image_batch::ImageBatch;
+use crate::{compute::memory_tracker::MemoryTracker, utils::dataloader_error::DataLoaderError};
 
 // TODO: Performance gains when needing to multiple tasks in sequence
 // TODO: Generalise the usage a little bit more
 // NOTE: Get it working, then simplify
+
+// TODO: Look at VK_KHR_device_group. I Think we want to stick with individually managed GPUs though
 
 // Precompiled SPIR-V shader bytes
 const COMPUTE_SHADER_U8: &[u8] = include_bytes!("../shaders/math_ops_u8.spv");
@@ -24,8 +25,16 @@ pub struct GPU {
     pipeline_layout: vk::PipelineLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layout: vk::DescriptorSetLayout,
-    color_type: ColorType,
     pipeline_f32: vk::Pipeline,
+    memory_tracker: MemoryTracker
+}
+
+#[derive(Debug, Clone)]
+pub struct GPUInfo {
+    pub device_name: String,
+    pub device_type: vk::PhysicalDeviceType,
+    pub total_memory: u64,
+    pub device_index: usize,
 }
 
 #[repr(C)]
@@ -40,14 +49,13 @@ pub struct GPUMemory {
     size: vk::DeviceSize,
     device: Arc<Device>,
     descriptor_set: vk::DescriptorSet,
-    gpu: Arc<GPU>,
 }
 
 impl GPU {
-    pub fn new(device_index: usize, ct: &ColorType) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+    pub fn new(device_index: usize) -> Result<Self, Box<dyn std::error::Error>> {
         unsafe {
             let entry = Arc::new(Entry::load()?);
-            let app_name = CString::new("Compute App")?;
+            let app_name = CString::new("VK GPU")?;
             
             let appinfo = vk::ApplicationInfo {
                 s_type: vk::StructureType::APPLICATION_INFO,
@@ -199,7 +207,20 @@ impl GPU {
             //let pipeline_u16 = Self::create_pipeline(&device, pipeline_layout, COMPUTE_SHADER_U16)?;
             let pipeline_f32 = Self::create_pipeline(&device, pipeline_layout, COMPUTE_SHADER_F32)?;
 
-            Ok(Arc::new(Self {
+            let memory_properties = instance.get_physical_device_memory_properties(physical_device);
+            let total_memory = {
+                let device_local_heap_index = (0..memory_properties.memory_type_count)
+                    .find(|&i| {
+                        let memory_type = memory_properties.memory_types[i as usize];
+                        memory_type.property_flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+                    })
+                    .map(|i| memory_properties.memory_types[i as usize].heap_index)
+                    .unwrap_or(0);
+                
+                memory_properties.memory_heaps[device_local_heap_index as usize].size
+            };
+
+            Ok(Self {
                 entry,
                 instance,
                 device,
@@ -210,9 +231,9 @@ impl GPU {
                 pipeline_layout,
                 descriptor_pool,
                 descriptor_set_layout,
-                color_type: ct.clone(),
                 pipeline_f32,
-            }))
+                memory_tracker: MemoryTracker::new(total_memory),
+            })
         }
     }
 
@@ -285,111 +306,110 @@ impl GPU {
         }
     }
 
-    pub fn move_to_gpu(self: &Arc<Self>, batch: &ImageBatch) -> Result<GPUMemory, Box<dyn std::error::Error>> {
-        let size = batch.image_data.len() as vk::DeviceSize;
-        
+    unsafe fn create_instance(entry: &Entry) -> Result<Instance, Box<dyn std::error::Error>> {
+        let app_name = CString::new("Compute App")?;
+        let appinfo = vk::ApplicationInfo {
+            s_type: vk::StructureType::APPLICATION_INFO,
+            p_next: ptr::null(),
+            p_application_name: app_name.as_ptr(),
+            application_version: vk::make_api_version(0, 1, 0, 0),
+            p_engine_name: app_name.as_ptr(),
+            engine_version: vk::make_api_version(0, 1, 0, 0),
+            api_version: vk::make_api_version(0, 1, 0, 0),
+            _marker: std::marker::PhantomData,
+        };
+
+        let create_info = vk::InstanceCreateInfo {
+            s_type: vk::StructureType::INSTANCE_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: vk::InstanceCreateFlags::empty(),
+            p_application_info: &appinfo,
+            enabled_layer_count: 0,
+            pp_enabled_layer_names: ptr::null(),
+            enabled_extension_count: 0,
+            pp_enabled_extension_names: ptr::null(),
+            _marker: std::marker::PhantomData,
+        };
+
+        Ok(entry.create_instance(&create_info, None)?)
+    }
+
+    pub fn total_memory(&self) -> u64 {
         unsafe {
-            let buffer_info = vk::BufferCreateInfo {
-                s_type: vk::StructureType::BUFFER_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: vk::BufferCreateFlags::empty(),
-                size,
-                usage: vk::BufferUsageFlags::STORAGE_BUFFER,
-                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                queue_family_index_count: 0,
-                p_queue_family_indices: ptr::null(),
-                _marker: std::marker::PhantomData,
-            };
-
-            let buffer = self.device.create_buffer(&buffer_info, None)?;
-            let mem_requirements = self.device.get_buffer_memory_requirements(buffer);
+            let memory_properties = self.instance.get_physical_device_memory_properties(self.physical_device);
             
-            let memory_type = self.find_memory_type(
-                mem_requirements.memory_type_bits,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            )?;
-
-            let alloc_info = vk::MemoryAllocateInfo {
-                s_type: vk::StructureType::MEMORY_ALLOCATE_INFO,
-                p_next: ptr::null(),
-                allocation_size: mem_requirements.size,
-                memory_type_index: memory_type,
-                _marker: std::marker::PhantomData,
-            };
-
-            let memory = self.device.allocate_memory(&alloc_info, None)?;
-            self.device.bind_buffer_memory(buffer, memory, 0)?;
-
-            // Write data to GPU memory
-            let data_ptr = self.device.map_memory(
-                memory,
-                0,
-                size,
-                vk::MemoryMapFlags::empty(),
-            )? as *mut u8;
-
-            std::ptr::copy_nonoverlapping(
-                batch.image_data.as_ptr(),
-                data_ptr,
-                batch.image_data.len()
-            );
+            // Find the heap index that corresponds to device local (GPU) memory
+            let device_local_heap_index = (0..memory_properties.memory_type_count)
+                .find(|&i| {
+                    let memory_type = memory_properties.memory_types[i as usize];
+                    memory_type.property_flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+                })
+                .map(|i| memory_properties.memory_types[i as usize].heap_index)
+                .unwrap_or(0);
             
-            self.device.unmap_memory(memory);
-
-            // Create descriptor set for this buffer
-            let set_layouts = [self.descriptor_set_layout];
-            let alloc_info = vk::DescriptorSetAllocateInfo {
-                s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
-                p_next: ptr::null(),
-                descriptor_pool: self.descriptor_pool,
-                descriptor_set_count: 1,
-                p_set_layouts: set_layouts.as_ptr(),
-                _marker: std::marker::PhantomData,
-            };
-
-            let descriptor_set = self.device.allocate_descriptor_sets(&alloc_info)?[0];
-
-            // Update descriptor set
-            let buffer_info = vk::DescriptorBufferInfo {
-                buffer,
-                offset: 0,
-                range: size,
-            };
-
-            let write_descriptor_set = vk::WriteDescriptorSet {
-                s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-                p_next: ptr::null(),
-                dst_set: descriptor_set,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_count: 1,
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                p_image_info: ptr::null(),
-                p_buffer_info: &buffer_info,
-                p_texel_buffer_view: ptr::null(),
-                _marker: std::marker::PhantomData,
-            };
-
-            self.device.update_descriptor_sets(&[write_descriptor_set], &[]);
-
-            Ok(GPUMemory {
-                buffer,
-                memory,
-                size,
-                device: Arc::new(self.device.clone()),
-                descriptor_set,
-                gpu: Arc::clone(self),
-            })
+            // Get the size of the device local heap
+            memory_properties.memory_heaps[device_local_heap_index as usize].size
         }
     }
 
-    pub fn move_to_gpu_as_f32(self: &Arc<Self>, batch: &ImageBatch) -> Result<GPUMemory, Box<dyn std::error::Error>> {
-        let components_per_pixel = self.color_type.channel_count() as usize;
-        let bytes_per_component = self.color_type.bytes_per_pixel() as usize / components_per_pixel;
-        
-        // Total number of f32 values will be the same as the number of components
-        let num_components = batch.image_data.len() / bytes_per_component;
-        let size_in_bytes = (num_components * std::mem::size_of::<f32>()) as vk::DeviceSize;
+    pub fn available_gpus() -> Result<Vec<GPUInfo>, DataLoaderError> {
+        unsafe {
+            let entry = Entry::load()
+                .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                
+            let instance = Self::create_instance(&entry).unwrap();
+            
+            let physical_devices = instance.enumerate_physical_devices().unwrap();
+            let mut gpu_infos = Vec::new();
+            
+            for (idx, &physical_device) in physical_devices.iter().enumerate() {
+                let device_properties = instance.get_physical_device_properties(physical_device);
+                let memory_properties = instance.get_physical_device_memory_properties(physical_device);
+                
+                // Convert i8 to u8. All should be between 0-255
+                let device_name = String::from_utf8_lossy(&device_properties.device_name.map(|x| x as u8))
+                    .trim_matches(char::from(0))
+                    .to_string();
+                
+                let total_memory = {
+                    let device_local_heap_index = (0..memory_properties.memory_type_count)
+                        .find(|&i| {
+                            let memory_type = memory_properties.memory_types[i as usize];
+                            memory_type.property_flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+                        })
+                        .map(|i| memory_properties.memory_types[i as usize].heap_index)
+                        .unwrap_or(0);
+                    
+                    memory_properties.memory_heaps[device_local_heap_index as usize].size
+                };
+                
+                let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
+                let has_compute = queue_families.iter()
+                    .any(|props| props.queue_flags.contains(vk::QueueFlags::COMPUTE));
+                
+                if has_compute {
+                    gpu_infos.push(GPUInfo {
+                        device_name,
+                        device_type: device_properties.device_type,
+                        total_memory,
+                        device_index: idx,
+                    });
+                }
+            }
+            
+            // Sort GPUs: discrete first, then by memory size
+            gpu_infos.sort_by_key(|gpu| {
+                (!matches!(gpu.device_type, vk::PhysicalDeviceType::DISCRETE_GPU), 
+                 std::cmp::Reverse(gpu.total_memory))
+            });
+            
+            instance.destroy_instance(None);
+            Ok(gpu_infos)
+        }
+    }
+
+    pub fn move_to_gpu_as_f32(&self, data: &[f32]) -> Result<GPUMemory, Box<dyn std::error::Error>> {
+        let size_in_bytes = (data.len() * std::mem::size_of::<f32>()) as vk::DeviceSize;
 
         unsafe {
             // Create buffer for f32 data
@@ -424,7 +444,7 @@ impl GPU {
             let memory = self.device.allocate_memory(&alloc_info, None)?;
             self.device.bind_buffer_memory(buffer, memory, 0)?;
 
-            // Map memory and convert data to f32
+            // Map memory and write data
             let data_ptr = self.device.map_memory(
                 memory,
                 0,
@@ -432,47 +452,11 @@ impl GPU {
                 vk::MemoryMapFlags::empty(),
             )? as *mut f32;
 
-            // Create temporary Vec for conversion
-            let mut temp_data = vec![0.0f32; num_components];
-
-            // Convert based on the source format
-            match self.color_type {
-                ColorType::L8 | ColorType::La8 | ColorType::Rgb8 | ColorType::Rgba8 => {
-                    // Direct conversion of each u8 component to f32
-                    for i in 0..num_components {
-                        temp_data[i] = batch.image_data[i] as f32;
-                    }
-                },
-                ColorType::L16 | ColorType::La16 | ColorType::Rgb16 | ColorType::Rgba16 => {
-                    // Convert each u16 component to f32
-                    let src = batch.image_data.as_ptr() as *const u16;
-                    for i in 0..num_components {
-                        let val = u16::from_le_bytes([
-                            batch.image_data[i * 2],
-                            batch.image_data[i * 2 + 1]
-                        ]);
-                        temp_data[i] = val as f32;
-                    }
-                },
-                ColorType::Rgb32F | ColorType::Rgba32F => {
-                    // Each component is already f32, just need to reinterpret bytes
-                    for i in 0..num_components {
-                        temp_data[i] = f32::from_le_bytes([
-                            batch.image_data[i * 4],
-                            batch.image_data[i * 4 + 1],
-                            batch.image_data[i * 4 + 2],
-                            batch.image_data[i * 4 + 3],
-                        ]);
-                    }
-                },
-                _ => return Err("Unsupported color type".into()),
-            }
-
-            // Copy the converted data
+            // Copy the data
             std::ptr::copy_nonoverlapping(
-                temp_data.as_ptr(),
+                data.as_ptr(),
                 data_ptr,
-                num_components
+                data.len()
             );
             
             self.device.unmap_memory(memory);
@@ -519,7 +503,6 @@ impl GPU {
                 size: size_in_bytes,
                 device: Arc::new(self.device.clone()),
                 descriptor_set,
-                gpu: Arc::clone(self)
             })
         }
     }
@@ -549,6 +532,22 @@ impl GPU {
 
     fn get_active_pipeline(&self) -> vk::Pipeline {
         self.pipeline_f32
+    }
+
+    pub fn add(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+        self.execute_operation(src1, src2, 0)
+    }
+
+    pub fn sub(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+        self.execute_operation(src1, src2, 1)
+    }
+
+    pub fn mul(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+        self.execute_operation(src1, src2, 2)
+    }
+
+    pub fn div(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+        self.execute_operation(src1, src2, 3)
     }
 
     fn execute_operation(
@@ -679,32 +678,14 @@ impl GPU {
             Ok(())
         }
     }
-}
 
-impl GPUMemory {
-    pub fn add(&self, other: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
-        self.gpu.execute_operation(self, other, 0)
-    }
-
-    pub fn sub(&self, other: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
-        self.gpu.execute_operation(self, other, 1)
-    }
-
-    pub fn mul(&self, other: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
-        self.gpu.execute_operation(self, other, 2)
-    }
-
-    pub fn div(&self, other: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
-        self.gpu.execute_operation(self, other, 3)
-    }
-
-    pub fn read_data(&self) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    pub fn read_memory(&self, memory: &GPUMemory) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         unsafe {
             // Create command buffer for memory barrier
             let alloc_info = vk::CommandBufferAllocateInfo {
                 s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
                 p_next: ptr::null(),
-                command_pool: self.gpu.command_pool,
+                command_pool: self.command_pool,
                 level: vk::CommandBufferLevel::PRIMARY,
                 command_buffer_count: 1,
                 _marker: std::marker::PhantomData,
@@ -759,21 +740,21 @@ impl GPUMemory {
             };
 
             self.device.queue_submit(
-                self.gpu.compute_queue,
+                self.compute_queue,
                 &[submit_info],
                 vk::Fence::null(),
             )?;
 
-            self.device.queue_wait_idle(self.gpu.compute_queue)?;
+            self.device.queue_wait_idle(self.compute_queue)?;
 
             // Now read the data
-            let num_floats = (self.size as usize) / std::mem::size_of::<f32>();
+            let num_floats = (memory.size as usize) / std::mem::size_of::<f32>();
             let mut output_data = vec![0f32; num_floats];
             
             let data_ptr = self.device.map_memory(
-                self.memory,
+                memory.memory,
                 0,
-                self.size,
+                memory.size,
                 vk::MemoryMapFlags::empty(),
             )? as *const f32;
 
@@ -783,13 +764,25 @@ impl GPUMemory {
                 num_floats
             );
             
-            self.device.unmap_memory(self.memory);
+            self.device.unmap_memory(memory.memory);
 
             // Cleanup
-            self.device.free_command_buffers(self.gpu.command_pool, &[command_buffer]);
+            self.device.free_command_buffers(self.command_pool, &[command_buffer]);
 
             Ok(output_data)
         }
+    }
+
+    pub fn allocate_memory(&mut self, size: u64) -> Result<(), DataLoaderError> {
+        self.memory_tracker.allocate(size)
+    }
+
+    pub fn deallocate_memory(&mut self, size: u64) {
+        self.memory_tracker.deallocate(size)
+    }
+
+    pub fn available_memory(&self) -> u64 {
+        self.memory_tracker.get_available()
     }
 }
 
