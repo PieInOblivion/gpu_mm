@@ -1,44 +1,51 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use crate::utils::dataloader_error::DataLoaderError;
-
-// Always works in byte counts. Unspecific function names or variables can assume to return or use byte counts
 
 pub struct MemoryTracker {
     maximum: u64,
-    current: u64
+    current: AtomicU64
 }
+
+// This implementation doesn't require a mutable reference to update
+// The trade off of checking after the change is that there's only one operation, so no race conditions
 
 impl MemoryTracker {
     pub fn new(maximum: u64) -> Self {
         Self {
             maximum,
-            current: 0,
+            current: AtomicU64::new(0),
         }
     }
 
-    pub fn allocate(&mut self, size: u64) -> Result<(), DataLoaderError> {
-        let new_usage = match self.current.checked_add(size) {
-            Some(usage) => usage,
-            None => return Err(DataLoaderError::OutOfMemory(
-                format!("Memory allocation would overflow: current {} + size {}", 
-                    self.current, size)
-            )),
+    pub fn allocate(&self, size: u64) -> Result<(), DataLoaderError> {
+        let prev = self.current.fetch_add(size, Ordering::SeqCst);
+        let new = match prev.checked_add(size) {
+            Some(v) => v,
+            None => {
+                self.current.fetch_sub(size, Ordering::SeqCst);
+                return Err(DataLoaderError::OutOfMemory(
+                    format!("Memory allocation would overflow: current {} + size {}", prev, size)
+                ));
+            }
         };
-        if new_usage > self.maximum {
+
+        if new > self.maximum {
+            self.current.fetch_sub(size, Ordering::SeqCst);
             return Err(DataLoaderError::OutOfMemory(
                 format!("Memory limit exceeded: tried to allocate {} bytes when {} of {} bytes are used", 
-                    size, self.current, self.maximum)
+                    size, prev, self.maximum)
             ));
         }
-        self.current = new_usage;
+        
         Ok(())
     }
 
-    pub fn deallocate(&mut self, size: u64) {
-        self.current = self.current.saturating_sub(size);
+    pub fn deallocate(&self, size: u64) {
+        self.current.fetch_sub(size, Ordering::SeqCst);
     }
 
     pub fn get_current(&self) -> u64 {
-        self.current
+        self.current.load(Ordering::SeqCst)
     }
 
     pub fn get_maximum(&self) -> u64 {
@@ -46,6 +53,6 @@ impl MemoryTracker {
     }
 
     pub fn get_available(&self) -> u64 {
-        self.maximum - self.current
+        self.maximum - self.get_current()
     }
 }

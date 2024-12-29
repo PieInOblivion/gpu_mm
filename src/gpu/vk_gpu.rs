@@ -3,6 +3,8 @@ use std::{ffi::CString, ptr, sync::Arc};
 
 use crate::{compute::memory_tracker::MemoryTracker, utils::dataloader_error::DataLoaderError};
 
+use super::vk_gpu_info::GPUInfo;
+
 // TODO: Performance gains when needing to multiple tasks in sequence
 // TODO: Generalise the usage a little bit more
 // NOTE: Get it working, then simplify
@@ -27,14 +29,6 @@ pub struct GPU {
     descriptor_set_layout: vk::DescriptorSetLayout,
     pipeline_f32: vk::Pipeline,
     memory_tracker: MemoryTracker
-}
-
-#[derive(Debug, Clone)]
-pub struct GPUInfo {
-    pub device_name: String,
-    pub device_type: vk::PhysicalDeviceType,
-    pub total_memory: u64,
-    pub device_index: usize,
 }
 
 #[repr(C)]
@@ -357,50 +351,23 @@ impl GPU {
             let entry = Entry::load()
                 .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
                 
-            let instance = Self::create_instance(&entry).unwrap();
+            let instance = Self::create_instance(&entry)
+                .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
             
-            let physical_devices = instance.enumerate_physical_devices().unwrap();
-            let mut gpu_infos = Vec::new();
-            
-            for (idx, &physical_device) in physical_devices.iter().enumerate() {
-                let device_properties = instance.get_physical_device_properties(physical_device);
-                let memory_properties = instance.get_physical_device_memory_properties(physical_device);
+            let physical_devices = instance.enumerate_physical_devices()
+                .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
                 
-                // Convert i8 to u8. All should be between 0-255
-                let device_name = String::from_utf8_lossy(&device_properties.device_name.map(|x| x as u8))
-                    .trim_matches(char::from(0))
-                    .to_string();
-                
-                let total_memory = {
-                    let device_local_heap_index = (0..memory_properties.memory_type_count)
-                        .find(|&i| {
-                            let memory_type = memory_properties.memory_types[i as usize];
-                            memory_type.property_flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-                        })
-                        .map(|i| memory_properties.memory_types[i as usize].heap_index)
-                        .unwrap_or(0);
-                    
-                    memory_properties.memory_heaps[device_local_heap_index as usize].size
-                };
-                
-                let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
-                let has_compute = queue_families.iter()
-                    .any(|props| props.queue_flags.contains(vk::QueueFlags::COMPUTE));
-                
-                if has_compute {
-                    gpu_infos.push(GPUInfo {
-                        device_name,
-                        device_type: device_properties.device_type,
-                        total_memory,
-                        device_index: idx,
-                    });
-                }
-            }
+            // Create GPUInfo for each device and filter for compute support
+            let mut gpu_infos: Vec<_> = physical_devices.iter()
+                .enumerate()
+                .map(|(idx, &device)| GPUInfo::new(&instance, device, idx))
+                .filter(|info| info.has_compute)
+                .collect();
             
             // Sort GPUs: discrete first, then by memory size
             gpu_infos.sort_by_key(|gpu| {
-                (!matches!(gpu.device_type, vk::PhysicalDeviceType::DISCRETE_GPU), 
-                 std::cmp::Reverse(gpu.total_memory))
+                (gpu.device_type != vk::PhysicalDeviceType::DISCRETE_GPU,
+                    std::cmp::Reverse(gpu.total_memory))
             });
             
             instance.destroy_instance(None);
@@ -534,20 +501,24 @@ impl GPU {
         self.pipeline_f32
     }
 
-    pub fn add(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn copy_into(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
         self.execute_operation(src1, src2, 0)
     }
 
-    pub fn sub(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn add(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
         self.execute_operation(src1, src2, 1)
     }
 
-    pub fn mul(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn sub(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
         self.execute_operation(src1, src2, 2)
     }
 
-    pub fn div(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn mul(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
         self.execute_operation(src1, src2, 3)
+    }
+
+    pub fn div(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+        self.execute_operation(src1, src2, 4)
     }
 
     fn execute_operation(
@@ -773,11 +744,11 @@ impl GPU {
         }
     }
 
-    pub fn allocate_memory(&mut self, size: u64) -> Result<(), DataLoaderError> {
+    pub fn allocate_memory(&self, size: u64) -> Result<(), DataLoaderError> {
         self.memory_tracker.allocate(size)
     }
 
-    pub fn deallocate_memory(&mut self, size: u64) {
+    pub fn deallocate_memory(&self, size: u64) {
         self.memory_tracker.deallocate(size)
     }
 

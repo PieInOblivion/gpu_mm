@@ -120,8 +120,6 @@ impl DataLoaderForImages {
         }
 
         // .collect() can use size_hint from std::ops::Range
-        //self.dataset_indices = Vec::with_capacity(self.dataset.len());
-        //self.dataset_indices.extend(0..self.dataset.len());
         self.dataset_indices = (0..self.dataset.len()).collect();
 
         self.config.rng = if self.config.shuffle {

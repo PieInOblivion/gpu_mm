@@ -1,9 +1,8 @@
 use crate::{
-    gpu::vk_gpu::{GPU, GPUMemory},
-    utils::dataloader_error::DataLoaderError,
+    gpu::vk_gpu::{GPUMemory, GPU}, model::{layer::{LayerDesc, LayerType}, model::ModelDesc, tensor::TensorDesc}, utils::dataloader_error::DataLoaderError
 };
 
-use super::{cpu_compute::CPUCompute, tensor::Tensor};
+use super::cpu_compute::CPUCompute;
 
 pub enum DeviceLocation {
     CPU,
@@ -15,30 +14,71 @@ pub enum ComputeLocation {
     GPU {
         gpu_idx: usize,
         memory: GPUMemory,
-    }
+    },
+    Parameterless
+}
+
+pub struct ComputeTensor {
+    pub desc: TensorDesc,
+    pub location: ComputeLocation,
+}
+
+pub struct ComputeLayer {
+    pub desc: LayerDesc,
+    pub weights: ComputeTensor,
+    pub biases: ComputeTensor,
+    pub activations: ComputeTensor,
 }
 
 pub struct ComputeManager {
+    model_desc: ModelDesc,
     gpus: Vec<GPU>,
     upto_gpu: usize,
     cpu: CPUCompute,
+    pub layers: Vec<ComputeLayer>,
 }
 
 impl ComputeManager {
-    pub fn new() -> Result<Self, DataLoaderError> {
-        Ok(Self {
-            gpus: Self::available_gpus()?,
-            upto_gpu: 0,
-            cpu: CPUCompute::new(None),
-        })
+    pub fn new(desc: ModelDesc) -> Result<Self, DataLoaderError> {
+        let gpus = Self::available_gpus()?;
+        Self::new_with(desc, gpus, None)
     }
 
-    pub fn new_with(gpus: Vec<GPU>, cpu_memory_limit_bytes: Option<u64>) -> Self {
-        Self {
+    pub fn new_with(desc: ModelDesc, gpus: Vec<GPU>, cpu_memory_limit_bytes: Option<u64>) -> Result<Self, DataLoaderError> {
+        let cpu = CPUCompute::new(cpu_memory_limit_bytes);
+
+        let total_memory = desc.total_memory_requirements();
+        let total_available: u64 = gpus.iter()
+            .map(|gpu| gpu.available_memory())
+            .sum::<u64>()
+            + cpu.memory_tracking.get_available();
+
+        // This will not be the most accurate as it doesn't account for any allocation overhead
+        // but should be close enough for this concept
+        if total_memory > total_available {
+            return Err(DataLoaderError::OutOfMemory(
+                format!("Model requires {} bytes but only {} available", 
+                    total_memory, total_available)
+            ));
+        }
+        
+        let mut manager = Self {
+            model_desc: desc.clone(),
             gpus,
             upto_gpu: 0,
-            cpu: CPUCompute::new(cpu_memory_limit_bytes),
+            cpu,
+            layers: Vec::with_capacity(desc.layers.len()),
+        };
+
+        // Allocate layers sequentially
+        for layer_desc in desc.layers.into_iter() {
+            let layer_memory = layer_desc.memory_requirements();
+            let target_device = manager.find_optimal_device(layer_memory)?;
+            let compute_layer = manager.allocate_layer(layer_desc, &target_device)?;
+            manager.layers.push(compute_layer);
         }
+
+        Ok(manager)
     }
 
     pub fn available_gpus() -> Result<Vec<GPU>, DataLoaderError> {
@@ -54,7 +94,7 @@ impl ComputeManager {
         Ok(gpus)
     }
 
-    pub fn find_optimal_device(&mut self, size: u64) -> Result<DeviceLocation, DataLoaderError> {
+    fn find_optimal_device(&mut self, size: u64) -> Result<DeviceLocation, DataLoaderError> {
         // Try current GPU first
         if self.upto_gpu < self.gpus.len() {
             let gpu = &self.gpus[self.upto_gpu];
@@ -80,27 +120,102 @@ impl ComputeManager {
         }
     }
 
-    pub fn move_tensor_to_device(
-        &mut self,
-        tensor: &mut Tensor,
-        target_device: &DeviceLocation
-    ) -> Result<(), DataLoaderError> {
-        // Get sizes for memory tracking
-        let size = tensor.size() as u64;
+    fn allocate_layer(&mut self, layer_desc: LayerDesc, target_device: &DeviceLocation) -> Result<ComputeLayer, DataLoaderError> {
+        let (weights, biases) = if layer_desc.requires_parameters {
+            (
+                self.allocate_tensor(&layer_desc.weights, target_device)?,
+                self.allocate_tensor(&layer_desc.biases, target_device)?
+            )
+        } else {
+            // Create tensors with None location for non-parameter layers
+            (
+                ComputeTensor {
+                    desc: layer_desc.weights.clone(),
+                    location: ComputeLocation::Parameterless,
+                },
+                ComputeTensor {
+                    desc: layer_desc.biases.clone(),
+                    location: ComputeLocation::Parameterless,
+                }
+            )
+        };
 
-        // Deallocate from current device
-        match &tensor.location {
-            ComputeLocation::CPU(_) => {
-                self.cpu.memory_tracking.deallocate(size);
+        // Get input shape from previous layer if it exists
+        let input_shape = self.layers.last()
+            .map(|layer| layer.activations.desc.shape.as_slice());
+    
+        // Calculate output shape using model's batch size
+        let output_shape = layer_desc.output_shape(self.model_desc.batch_size, input_shape)?;
+    
+        // Create tensor descriptor for activations
+        let activation_desc = TensorDesc::new(output_shape);
+        // Allocate the activation tensor on target device
+        let activations = self.allocate_tensor(&activation_desc, target_device)?;
+    
+        Ok(ComputeLayer {
+            desc: layer_desc,
+            weights,
+            biases,
+            activations,
+        })
+    }
+
+    fn allocate_tensor(&mut self, desc: &TensorDesc, target_device: &DeviceLocation) 
+        -> Result<ComputeTensor, DataLoaderError> {
+        // Allocate memory on target device
+        let size_in_bytes = desc.size() as u64;
+    
+        let initial_data = self.model_desc.weight_init.init(&desc.shape);
+        
+        let location = match target_device {
+            DeviceLocation::CPU => {
+                // Allocate CPU memory
+                self.cpu.memory_tracking.allocate(size_in_bytes)?;
+                ComputeLocation::CPU(initial_data)
             },
-            ComputeLocation::GPU { gpu_idx, .. } => {
-                if let Some(gpu) = self.gpus.get_mut(*gpu_idx) {
-                    gpu.deallocate_memory(size);
+            DeviceLocation::GPU(idx) => {
+                // Allocate GPU memory
+                let gpu = &mut self.gpus[*idx];
+                gpu.allocate_memory(size_in_bytes)?;
+                
+                let gpu_memory = gpu.move_to_gpu_as_f32(&initial_data)
+                    .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                
+                ComputeLocation::GPU {
+                    gpu_idx: *idx,
+                    memory: gpu_memory,
                 }
             }
+        };
+
+        Ok(ComputeTensor {
+            desc: desc.clone(),
+            location,
+        })
+    }
+
+    fn move_tensor_to_device(
+        &self,
+        tensor: &mut ComputeTensor,
+        target_device: &DeviceLocation
+    ) -> Result<(), DataLoaderError> {
+        // If tensor is Parameterless, no need to move anything
+        if let ComputeLocation::Parameterless = tensor.location {
+            return Ok(());
+        }
+    
+        // If already on target device, nothing to do
+        match (&tensor.location, target_device) {
+            (ComputeLocation::CPU(_), DeviceLocation::CPU) => return Ok(()),
+            (ComputeLocation::GPU { gpu_idx, .. }, DeviceLocation::GPU(target_idx))
+                if gpu_idx == target_idx => return Ok(()),
+            _ => {}
         }
 
-        // Allocate on new device
+        // Get size for memory tracking
+        let size = tensor.desc.size() as u64;
+    
+        // Allocate on new device first
         match target_device {
             DeviceLocation::CPU => {
                 self.cpu.memory_tracking.allocate(size)?;
@@ -109,25 +224,22 @@ impl ComputeManager {
                 self.gpus[*idx].allocate_memory(size)?;
             }
         }
-
-        // Perform the actual move
-        match &tensor.location {
+    
+        // Perform the move
+        let new_location = match &tensor.location {
             ComputeLocation::CPU(data) => {
                 match target_device {
-                    DeviceLocation::CPU => {
-                        // Already on CPU
-                        return Ok(());
-                    },
+                    DeviceLocation::CPU => unreachable!(), // Handled above
                     DeviceLocation::GPU(idx) => {
                         // CPU to GPU
                         let gpu = &self.gpus[*idx];
                         let gpu_mem = gpu.move_to_gpu_as_f32(data)
                             .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
-
-                        tensor.location = ComputeLocation::GPU {
+    
+                        ComputeLocation::GPU {
                             gpu_idx: *idx,
                             memory: gpu_mem,
-                        };
+                        }
                     }
                 }
             },
@@ -138,16 +250,11 @@ impl ComputeManager {
                         let gpu = &self.gpus[*gpu_idx];
                         let cpu_data = gpu.read_memory(memory)
                             .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
-                        tensor.location = ComputeLocation::CPU(cpu_data);
+                        
+                        ComputeLocation::CPU(cpu_data)
                     },
                     DeviceLocation::GPU(target_idx) => {
-                        if target_idx == gpu_idx {
-                            // Already on target GPU
-                            return Ok(());
-                        }
-                        
                         // GPU to different GPU
-                        // TODO: Gpu-to-gpu memory transfer. Not through CPU
                         let source_gpu = &self.gpus[*gpu_idx];
                         let cpu_data = source_gpu.read_memory(memory)
                             .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
@@ -156,14 +263,337 @@ impl ComputeManager {
                         let new_gpu_mem = target_gpu.move_to_gpu_as_f32(&cpu_data)
                             .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
                         
-                        tensor.location = ComputeLocation::GPU {
+                        ComputeLocation::GPU {
                             gpu_idx: *target_idx,
                             memory: new_gpu_mem,
-                        };
+                        }
                     }
                 }
+            },
+            ComputeLocation::Parameterless => unreachable!(),
+        };
+    
+        // Deallocate from old device
+        match &tensor.location {
+            ComputeLocation::CPU(_) => {
+                self.cpu.memory_tracking.deallocate(size);
+            },
+            ComputeLocation::GPU { gpu_idx, .. } => {
+                self.gpus[*gpu_idx].deallocate_memory(size);
+            },
+            ComputeLocation::Parameterless => unreachable!(),
+        }
+    
+        // Update tensor location
+        tensor.location = new_location;
+        Ok(())
+    }
+
+    pub fn move_model_to_cpu(&mut self) -> Result<(), DataLoaderError> {
+        // First check if we have enough CPU memory for all GPU tensors
+        let mut total_size_needed: u64 = 0;
+        
+        // Calculate total memory needed from GPU tensors
+        for layer in &self.layers {
+            if let ComputeLocation::GPU { .. } = layer.weights.location {
+                total_size_needed += layer.weights.desc.size() as u64;
+            }
+            
+            if let ComputeLocation::GPU { .. } = layer.biases.location {
+                total_size_needed += layer.biases.desc.size() as u64;
+            }
+            
+            if let ComputeLocation::GPU { .. } = layer.activations.location {
+                total_size_needed += layer.activations.desc.size() as u64;
             }
         }
+        
+        // Check if we have enough CPU memory available
+        if total_size_needed > self.cpu.memory_tracking.get_available() {
+            return Err(DataLoaderError::OutOfMemory(
+                format!("Not enough CPU memory to move GPU tensors: need {} bytes but only {} available",
+                    total_size_needed, self.cpu.memory_tracking.get_available())
+            ));
+        }
+
+        // Create a list of moves we need to perform
+        let mut moves = Vec::new();
+        
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            if let ComputeLocation::GPU { gpu_idx, .. } = layer.weights.location {
+                moves.push((layer_idx, "weights", gpu_idx));
+            }
+            if let ComputeLocation::GPU { gpu_idx, .. } = layer.biases.location {
+                moves.push((layer_idx, "biases", gpu_idx));
+            }
+            if let ComputeLocation::GPU { gpu_idx, .. } = layer.activations.location {
+                moves.push((layer_idx, "activations", gpu_idx));
+            }
+        }
+        
+        // Now perform all the moves
+        for (layer_idx, tensor_type, gpu_idx) in moves {
+            // Get mutable references to the specific tensors we want to move
+            let tensor = match tensor_type {
+                "weights" => &mut self.layers[layer_idx].weights,
+                "biases" => &mut self.layers[layer_idx].biases,
+                "activations" => &mut self.layers[layer_idx].activations,
+                _ => unreachable!(),
+            };
+            
+            // Perform the actual move
+            if let ComputeLocation::GPU { ref memory, .. } = tensor.location {
+                // Read the data from GPU
+                let data = self.gpus[gpu_idx].read_memory(memory)
+                    .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                
+                // Allocate CPU memory
+                let size = tensor.desc.size() as u64;
+                self.cpu.memory_tracking.allocate(size)?;
+                
+                // Free GPU memory
+                self.gpus[gpu_idx].deallocate_memory(size);
+                
+                // Update tensor location
+                tensor.location = ComputeLocation::CPU(data);
+            }
+        }
+        
         Ok(())
+    }
+
+    pub fn print_model_stats(&self) {
+        let mut total_params = 0usize;
+        let mut total_memory = 0u64;
+        
+        println!("\nModel Statistics");
+        println!("================");
+        println!("\nBatch Size: {}", self.model_desc.batch_size);
+        println!("\nLayer Details:");
+        println!("{:-<90}", "");
+        println!("{:<4} {:<20} {:<15} {:<15} {:<15} {:<15}", 
+            "No.", "Type", "Parameters", "Memory (MB)", "Output Shape", "Device");
+        println!("{:-<90}", "");
+
+        for (i, layer) in self.layers.iter().enumerate() {
+            let params = match &layer.desc.layer_type {
+                LayerType::Linear { in_features, out_features } => {
+                    // weights: out_features * in_features, biases: out_features
+                    in_features * out_features + out_features
+                },
+                LayerType::Conv2D { 
+                    in_channels, 
+                    out_channels, 
+                    kernel_size,
+                    ..
+                } => {
+                    // weights: out_channels * in_channels * kernel_size.0 * kernel_size.1
+                    // biases: out_channels
+                    out_channels * in_channels * kernel_size.0 * kernel_size.1 + out_channels
+                },
+                LayerType::ReLU |
+                LayerType::LeakyReLU { .. } |
+                LayerType::Sigmoid |
+                LayerType::Softmax { .. } |
+                LayerType::Tanh |
+                LayerType::GELU |
+                LayerType::SiLU => 0,
+            };
+
+            let memory_bytes = layer.desc.memory_requirements();
+            let memory_mb = memory_bytes as f64 / (1024.0 * 1024.0);
+            
+            // Get output shape from activations tensor
+            let output_shape = layer.activations.desc.shape
+                .iter()
+                .map(|&d| d.to_string())
+                .collect::<Vec<_>>()
+                .join("×");
+
+            let device_location = match &layer.activations.location {
+                ComputeLocation::CPU(_) => "CPU",
+                ComputeLocation::GPU { gpu_idx, .. } => &format!("GPU {}", gpu_idx),
+                ComputeLocation::Parameterless => "N/A",
+            };
+
+            let layer_type = match &layer.desc.layer_type {
+                LayerType::Linear { in_features, out_features } => 
+                    format!("Linear({}, {})", in_features, out_features),
+                LayerType::Conv2D { 
+                    in_channels, 
+                    out_channels, 
+                    kernel_size,
+                    stride,
+                    padding,
+                    ..
+                } => format!(
+                    "Conv2D({}, {}, {}×{}, s={:?}, p={:?})", 
+                    in_channels, out_channels, kernel_size.0, kernel_size.1,
+                    stride, padding
+                ),
+                LayerType::ReLU => "ReLU".to_string(),
+                LayerType::LeakyReLU { alpha } => format!("LeakyReLU(α={})", alpha),
+                LayerType::Sigmoid => "Sigmoid".to_string(),
+                LayerType::Softmax { dim } => format!("Softmax(dim={})", dim),
+                LayerType::Tanh => "Tanh".to_string(),
+                LayerType::GELU => "GELU".to_string(),
+                LayerType::SiLU => "SiLU".to_string(),
+            };
+
+            println!("{:<4} {:<20} {:<15} {:<15.2} {:<15} {:<15}", 
+                i, layer_type, params, memory_mb, output_shape, device_location);
+
+            total_params += params;
+            total_memory += memory_bytes;
+        }
+
+        println!("{:-<90}", "");
+        println!("\nModel Summary:");
+        println!("Total Parameters: {}", total_params);
+        println!("Total Memory: {:.2} MB", total_memory as f64 / (1024.0 * 1024.0));
+        
+        // Memory allocation status
+        println!("\nMemory Allocation:");
+        println!("CPU Memory Used: {:.2} MB", 
+            self.cpu.memory_tracking.get_current() as f64 / (1024.0 * 1024.0));
+        println!("CPU Memory Available: {:.2} MB", 
+            self.cpu.memory_tracking.get_available() as f64 / (1024.0 * 1024.0));
+        
+        for (i, gpu) in self.gpus.iter().enumerate() {
+            println!("GPU {} Memory Used: {:.2} MB", 
+                i, (gpu.total_memory() - gpu.available_memory()) as f64 / (1024.0 * 1024.0));
+            println!("GPU {} Memory Available: {:.2} MB", 
+                i, gpu.available_memory() as f64 / (1024.0 * 1024.0));
+        }
+    }
+
+    pub fn print_layer_values(&self, layer_idx: usize) -> Result<(), DataLoaderError> {
+        if layer_idx >= self.layers.len() {
+            return Err(DataLoaderError::VulkanLoadError(
+                format!("Layer index {} out of bounds (max {})", layer_idx, self.layers.len() - 1)
+            ));
+        }
+    
+        let layer = &self.layers[layer_idx];
+        
+        // Create detailed layer description
+        let layer_desc = match &layer.desc.layer_type {
+            LayerType::Linear { in_features, out_features } => 
+                format!("Linear({}, {})", in_features, out_features),
+            LayerType::Conv2D { 
+                in_channels, 
+                out_channels, 
+                kernel_size,
+                stride,
+                padding,
+                dilation,
+                ..
+            } => format!(
+                "Conv2D({}, {}, {}×{}, s={:?}, p={:?}, d={:?})", 
+                in_channels, out_channels, kernel_size.0, kernel_size.1,
+                stride, padding, dilation
+            ),
+            LayerType::ReLU => "ReLU".to_string(),
+            LayerType::LeakyReLU { alpha } => format!("LeakyReLU(α={})", alpha),
+            LayerType::Sigmoid => "Sigmoid".to_string(),
+            LayerType::Softmax { dim } => format!("Softmax(dim={})", dim),
+            LayerType::Tanh => "Tanh".to_string(),
+            LayerType::GELU => "GELU".to_string(),
+            LayerType::SiLU => "SiLU".to_string(),
+        };
+    
+        println!("\nLayer {} Values ({})", layer_idx, layer_desc);
+        println!("{:-<80}", "");
+    
+        // Helper closure to format arrays nicely
+        let format_array = |arr: &[f32], max_items: usize| {
+            let mut s = String::from("[");
+            for (i, val) in arr.iter().take(max_items).enumerate() {
+                if i > 0 { s.push_str(", "); }
+                s.push_str(&format!("{:.6}", val));
+            }
+            if arr.len() > max_items {
+                s.push_str(", ...")
+            }
+            s.push(']');
+            s
+        };
+    
+        // Helper function to print tensor information
+        let print_tensor_info = |name: &str, tensor: &ComputeTensor, gpu_idx: Option<usize>, 
+                                data: &[f32], shape: &[usize]| {
+            println!("\n{}:", name);
+            println!("Location: {}", match gpu_idx {
+                Some(idx) => format!("GPU {}", idx),
+                None => "CPU".to_string(),
+            });
+            println!("Shape: {:?}", shape);
+            println!("Values: {}", format_array(data, 10));
+            
+            // Print additional statistics for the tensor
+            if !data.is_empty() {
+                let min_val = data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                let max_val = data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                let mean = data.iter().sum::<f32>() / data.len() as f32;
+                println!("Stats: min={:.6}, max={:.6}, mean={:.6}", min_val, max_val, mean);
+            }
+        };
+    
+        // Print weights if layer has parameters
+        if layer.desc.requires_parameters {
+            match &layer.weights.location {
+                ComputeLocation::CPU(data) => {
+                    print_tensor_info("Weights", &layer.weights, None, data, &layer.weights.desc.shape);
+                },
+                ComputeLocation::GPU { gpu_idx, memory } => {
+                    let data = self.gpus[*gpu_idx].read_memory(memory)
+                        .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                    print_tensor_info("Weights", &layer.weights, Some(*gpu_idx), &data, &layer.weights.desc.shape);
+                },
+                ComputeLocation::Parameterless => {
+                    println!("\nWeights: No weights (parameterless layer)");
+                },
+            }
+    
+            match &layer.biases.location {
+                ComputeLocation::CPU(data) => {
+                    print_tensor_info("Biases", &layer.biases, None, data, &layer.biases.desc.shape);
+                },
+                ComputeLocation::GPU { gpu_idx, memory } => {
+                    let data = self.gpus[*gpu_idx].read_memory(memory)
+                        .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                    print_tensor_info("Biases", &layer.biases, Some(*gpu_idx), &data, &layer.biases.desc.shape);
+                },
+                ComputeLocation::Parameterless => {
+                    println!("\nBiases: No biases (parameterless layer)");
+                },
+            }
+        } else {
+            println!("\nParameters: None (activation layer)");
+        }
+    
+        // Print activations
+        match &layer.activations.location {
+            ComputeLocation::CPU(data) => {
+                print_tensor_info("Activations", &layer.activations, None, data, &layer.activations.desc.shape);
+            },
+            ComputeLocation::GPU { gpu_idx, memory } => {
+                let data = self.gpus[*gpu_idx].read_memory(memory)
+                    .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                print_tensor_info("Activations", &layer.activations, Some(*gpu_idx), &data, &layer.activations.desc.shape);
+            },
+            ComputeLocation::Parameterless => {
+                println!("\nActivations: No activations (parameterless layer)");
+            },
+        }
+    
+        Ok(())
+    }
+}
+
+impl Drop for ComputeManager {
+    fn drop(&mut self) {
+        // Clear layers first to ensure proper GPU memory cleanup
+        self.layers.clear();
     }
 }

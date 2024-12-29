@@ -7,8 +7,8 @@ edition = "2021"
 lto = true
 
 [dependencies]
-image = { version = "0.25.5", default-features = false, features = ["default-formats"] }
+image = { version = "0.25.5", default-features = false, features = ["png"] }
 rand = "0.8.5"
-thiserror = "2.0.6"
+thiserror = "2.0.9"
 ash = "0.38.0"
 sys-info = "0.9.1"
