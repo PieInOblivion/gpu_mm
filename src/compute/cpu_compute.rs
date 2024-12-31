@@ -19,8 +19,9 @@ impl CPUCompute {
         } else {
             Self {
                 // If cannot get available system memory, assume there is none
+                // Crate returns in kilobytes. We need bytes
                 // TODO: Print warning to user if sys_info returns 0 or error
-                memory_tracking: MemoryTracker::new(sys_info::mem_info().map(|info| info.avail).unwrap_or(0))
+                memory_tracking: MemoryTracker::new(sys_info::mem_info().map(|info| info.avail * 1024).unwrap_or(0))
             }
         }
     }
