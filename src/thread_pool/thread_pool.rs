@@ -1,14 +1,22 @@
-use std::{collections::VecDeque, sync::{atomic::AtomicUsize, Arc, Condvar, Mutex}};
+use std::{collections::VecDeque, num::NonZero, sync::{atomic::AtomicUsize, Arc, Condvar, Mutex}};
 
 use super::worker::{WorkType, WorkFutureBatch, WorkFuture, WorkItem, WorkQueue, Worker};
 
 pub struct ThreadPool {
-    pub work_queue: Arc<WorkQueue>,
+    work_queue: Arc<WorkQueue>,
     workers: Vec<Worker>,
 }
 
 impl ThreadPool {
-    pub fn new(size: usize) -> ThreadPool {
+    pub fn new() -> Arc<ThreadPool> {
+        let num_threads = std::thread::available_parallelism().map(NonZero::get).unwrap_or(1);
+
+        Self::new_with(num_threads)
+    }
+
+    pub fn new_with(num_threads: usize) -> Arc<ThreadPool> {
+        // Simplier than using NonZeroUsize and .get()
+        assert!(num_threads > 0);
 
         let work_queue = Arc::new(WorkQueue {
             queue: Mutex::new(VecDeque::new()),
@@ -16,18 +24,18 @@ impl ThreadPool {
             condvar: Condvar::new(),
         });
 
-        let mut workers = Vec::with_capacity(size);
-        for id in 0..size {
+        let mut workers = Vec::with_capacity(num_threads);
+        for id in 0..num_threads {
             workers.push(Worker::new(
                 id,
                 Arc::clone(&work_queue),
             ));
         }
 
-        ThreadPool {
+        Arc::new(ThreadPool {
             work_queue,
             workers,
-        }
+        })
     }
 
     pub fn submit_work(&self, work: WorkType) -> WorkFuture {

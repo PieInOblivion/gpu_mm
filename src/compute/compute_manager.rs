@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use crate::{
-    gpu::vk_gpu::{GPUMemory, GPU}, model::{layer::{LayerDesc, LayerType}, model::ModelDesc, tensor::TensorDesc}, utils::dataloader_error::DataLoaderError
+    gpu::vk_gpu::{GPUMemory, GPU}, model::{layer::{LayerDesc, LayerType}, model::ModelDesc, tensor::TensorDesc}, thread_pool::{thread_pool::ThreadPool, worker::{DataPtrF32, WorkType}}, utils::dataloader_error::DataLoaderError
 };
 
 use super::cpu_compute::CPUCompute;
@@ -35,17 +37,18 @@ pub struct ComputeManager {
     gpus: Vec<GPU>,
     upto_gpu: usize,
     cpu: CPUCompute,
+    thread_pool: Arc<ThreadPool>,
     pub layers: Vec<ComputeLayer>,
 }
 
 impl ComputeManager {
-    pub fn new(desc: ModelDesc) -> Result<Self, DataLoaderError> {
+    pub fn new(desc: ModelDesc, thread_pool: Arc<ThreadPool>) -> Result<Self, DataLoaderError> {
         let gpus = Self::available_gpus()?;
-        Self::new_with(desc, gpus, None)
+        Self::new_with(desc, gpus, None, thread_pool)
     }
 
-    pub fn new_with(desc: ModelDesc, gpus: Vec<GPU>, cpu_memory_limit_bytes: Option<u64>) -> Result<Self, DataLoaderError> {
-        let cpu = CPUCompute::new(cpu_memory_limit_bytes);
+    pub fn new_with(desc: ModelDesc, gpus: Vec<GPU>, cpu_memory_limit_bytes: Option<u64>, thread_pool: Arc<ThreadPool>) -> Result<Self, DataLoaderError> {
+        let cpu = CPUCompute::new(cpu_memory_limit_bytes, thread_pool.clone());
 
         let total_memory = desc.total_memory_requirements();
         let total_available: u64 = gpus.iter()
@@ -67,6 +70,7 @@ impl ComputeManager {
             gpus,
             upto_gpu: 0,
             cpu,
+            thread_pool,
             layers: Vec::with_capacity(desc.layers.len()),
         };
 
@@ -164,9 +168,21 @@ impl ComputeManager {
         -> Result<ComputeTensor, DataLoaderError> {
         // Allocate memory on target device
         let size_in_bytes = desc.size() as u64;
-    
-        let initial_data = self.model_desc.weight_init.init(&desc.shape);
+
+        // NOTE: There is probably a better place to put this
+        // The most optimal value depends on each machine. This will serve as a general value for now
+        let parallel_threshold = 10000;
+
+        let total_elements = desc.shape.iter().product();
         
+        let initial_data = {
+            if total_elements < parallel_threshold {
+                self.model_desc.weight_init.init(&desc.shape, total_elements)
+            } else {
+                self.model_desc.weight_init.par_init(&desc.shape, total_elements, parallel_threshold, self.thread_pool.clone())
+            }
+        };
+
         let location = match target_device {
             DeviceLocation::CPU => {
                 // Allocate CPU memory

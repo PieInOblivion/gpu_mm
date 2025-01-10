@@ -12,8 +12,6 @@ use crate::utils::dataloader_error::DataLoaderError;
 // Mayber just assert!() instead?
 // TODO: Clean up names
 pub struct DataLoaderConfig {
-    pub data_loading_threads: usize,
-    pub prefetch_threads: usize,
     pub prefetch_count: usize,
     pub batch_size: usize,
     pub train_ratio: f32,
@@ -23,7 +21,7 @@ pub struct DataLoaderConfig {
     pub shuffle_seed: Option<u64>,
     pub rng: Option<Arc<Mutex<StdRng>>>,
     pub drop_last: bool,
-    pub thread_pool: ThreadPool
+    pub thread_pool: Arc<ThreadPool>
 }
 
 impl DataLoaderConfig {
@@ -35,12 +33,8 @@ impl DataLoaderConfig {
 }
 
 impl Default for DataLoaderConfig {
-    fn default() -> Self {
-        let num_cpus = thread::available_parallelism().map(NonZero::get).unwrap_or(1);
-        
+    fn default() -> Self {        
         Self {
-            data_loading_threads: num_cpus,
-            prefetch_threads: 4,
             prefetch_count: 4,
             batch_size: 32,
             train_ratio: 0.8,
@@ -50,7 +44,7 @@ impl Default for DataLoaderConfig {
             shuffle_seed: None,
             rng: None,
             drop_last: true,
-            thread_pool: ThreadPool::new(num_cpus)
+            thread_pool: ThreadPool::new()
         }
     }
 }

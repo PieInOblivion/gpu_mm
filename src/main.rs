@@ -5,6 +5,7 @@ use gpu::vk_gpu::GPU;
 
 mod utils;
 use model::{layer::LayerType, model::ModelDesc, weight_init::WeightInit};
+use thread_pool::thread_pool::ThreadPool;
 use utils::{
     dataloader_config::DataLoaderConfig,
     dataloader_for_images::{DataLoaderForImages, DatasetSplit},
@@ -26,7 +27,12 @@ mod model;
         Can implement csv and other formats in future to support
         Raw binary support wanted in future
 
-    Thread pool is generic and will be seperated from dataloader
+    Thread pool is currently created once. Single threaded usage then means creating a whole pool of one worker.
+        Downside is that tasks are then loaded in advance which requires more memory than if the program just ran without a work queue
+    Will need to implement threadpool as an option in future
+
+    Thread pool batching also only submits the batch to begin work after generating the whole batch
+        This could maybe benefit from an adjustment that flushes to the queue ever x amount instead of generating -> pushing -> working sequentially
 
     Currently GPU is assumed to have all memory free
         Will use VK_EXT_memory_budget in the future as it seems to be the most commonly implemented extension
@@ -53,6 +59,10 @@ mod model;
 
 
 fn main() {
+    // Standard implementation, create one threadpool and share it.
+    // Otherwise structs that require a threadpool will create their own.
+    let thread_pool = ThreadPool::new();
+
     // - - - - Data loader and parralel iterator testing - - - -
     let config = DataLoaderConfig {
         shuffle_seed: Some(727),
@@ -61,6 +71,7 @@ fn main() {
         test_ratio: 0.0,
         drop_last: false,
         prefetch_count: 4,
+        thread_pool: thread_pool.clone(),
         ..Default::default()
     }
     .build()
@@ -149,14 +160,14 @@ fn main() {
             in_features: 256,
             out_features: 64
         },
-        //LayerType::ReLU,
+        LayerType::ReLU,
         LayerType::Linear {
             in_features: 64,
             out_features: 1
         }]
     );
 
-    let mut cm = ComputeManager::new(m).unwrap();
+    let mut cm = ComputeManager::new(m, thread_pool.clone()).unwrap();
     
     //cm.move_model_to_cpu().unwrap();
     
