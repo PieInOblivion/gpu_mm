@@ -9,15 +9,16 @@ This library contains high-level abstractions to make ML model development and u
 ## Overview
 This project was inspired by research showing CUDA's limitations (as demonstrated in [this IEEE paper](https://ieeexplore.ieee.org/document/10036080)). The current focus is on Vulkan support. As Vulkan compute gradually evolves into standardised specifications and extensions, we're currently working with shader computations.
 
-The project aims to provide abstractions at a level similar to PyTorch.
+The project aims to provide abstractions at a level similar to PyTorch, including multi-gpu support.
 
 ## Current Implementation Details (Assumptions, Descisions and Todo's)
 
 ### Image Loading
 * Current proof of concept implementation stores all file names in memory
   * Raw filesystems typically don't store file counts and aren't sorted, so we provide users that option for replicatability
-  * Direct filesystem read into per batch means end files can never be in the first batch
+  * Direct filesystem read into per batch means end files can never be in the first batch. Requires preread and store of filesystem
   * Future support planned for CSV and other formats
+    * This will stop the need for prereading directory
   * Raw binary support planned
 
 ### Thread Pool Implementation
