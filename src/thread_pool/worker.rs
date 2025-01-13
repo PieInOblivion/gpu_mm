@@ -8,8 +8,6 @@ use crate::model::weight_init::WeightInit;
 use crate::utils;
 use rand::distributions::Uniform;
 use rand::prelude::Distribution;
-use rand::rngs::StdRng;
-use rand::SeedableRng;
 use utils::dataloader_for_images::DataLoaderForImages;
 use utils::image_batch::ImageBatch;
 
@@ -271,7 +269,7 @@ impl Worker {
         fan_in: usize,
         fan_out: usize,
     ) -> WorkResult {
-        let mut rng = StdRng::from_entropy();
+        let mut rng = rand::thread_rng();
         
         // SAFETY: Each task works on a unique slice range, so no overlapping writes
         unsafe {
