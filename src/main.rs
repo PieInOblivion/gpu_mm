@@ -48,6 +48,8 @@ mod model;
     Model, Layer, Tensor etc will act as only descriptors, so that compute manager is able to handle all data and memory
         This will also allow for other compute managers to be used in the future
 
+    ImageBatch to f32 function assumes images to be stored in little endian
+
     Current GPU memory requirement calculations don't account for allocation overhead. Should be fine for now with a safe memory threshold set
     Also doesn't account for it's own cpu memory requirements, just a models
 

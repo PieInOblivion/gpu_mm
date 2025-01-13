@@ -25,37 +25,30 @@ impl ImageBatch {
         let components_per_pixel = self.color_type.channel_count() as usize;
         let bytes_per_component = self.color_type.bytes_per_pixel() as usize / components_per_pixel;
         let num_components = self.image_data.len() / bytes_per_component;
-        let mut result = vec![0.0f32; num_components];
+
+        let mut result = Vec::with_capacity(num_components);
+        unsafe {
+            result.set_len(num_components);
+        }
 
         match self.color_type {
             ColorType::L8 | ColorType::La8 | ColorType::Rgb8 | ColorType::Rgba8 => {
-                // Direct conversion of each u8 component to f32
-                for i in 0..num_components {
-                    result[i] = self.image_data[i] as f32;
+                for (i, &x) in self.image_data.iter().enumerate() {
+                    result[i] = x as f32;
                 }
-            },
+            }
             ColorType::L16 | ColorType::La16 | ColorType::Rgb16 | ColorType::Rgba16 => {
-                // Convert each u16 component to f32
-                for i in 0..num_components {
-                    let val = u16::from_le_bytes([
-                        self.image_data[i * 2],
-                        self.image_data[i * 2 + 1]
-                    ]);
-                    result[i] = val as f32;
+                for (i, chunk) in self.image_data.chunks_exact(2).enumerate() {
+                    result[i] = u16::from_le_bytes([chunk[0], chunk[1]]) as f32;
                 }
-            },
+            }
             ColorType::Rgb32F | ColorType::Rgba32F => {
-                // Each component is already f32, just need to reinterpret bytes
-                for i in 0..num_components {
-                    result[i] = f32::from_le_bytes([
-                        self.image_data[i * 4],
-                        self.image_data[i * 4 + 1],
-                        self.image_data[i * 4 + 2],
-                        self.image_data[i * 4 + 3],
-                    ]);
+                for (i, chunk) in self.image_data.chunks_exact(4).enumerate() {
+                    result[i] =
+                        f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                 }
-            },
-            _ => panic!("Unsupported color type"),
+            }
+            _ => panic!("Unsupported colour type in to_f32 ImageBatch"),
         }
 
         result
