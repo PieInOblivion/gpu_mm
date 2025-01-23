@@ -20,6 +20,8 @@ mod compute;
 
 mod model;
 
+mod dataloader;
+
 /* Design descisions and some TODOs
     Current proof of concept implementation of image loader stores all file names in memory
         Raw filesystems (most) don't store file counts and aren't sorted, so we to give users that option for replicatability
