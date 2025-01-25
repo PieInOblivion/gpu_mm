@@ -7,18 +7,20 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::utils::dataloader_config::DataLoaderConfig;
-use crate::utils::dataloader_error::DataLoaderError;
+use crate::thread_pool::thread_pool::ThreadPool;
+use crate::thread_pool::worker::{WorkResult, WorkType};
 
-use super::dataloader::{ComputeFormat, DataLoader, DatasetSplit};
-use super::datasource::DataSource;
+use super::config::DataLoaderConfig;
+use super::data_batch::DataBatch;
+use super::dataloader::{SourceFormat, DataLoader, DatasetSplit};
+use super::error::DataLoaderError;
 
-impl From<ColorType> for ComputeFormat {
+impl From<ColorType> for SourceFormat {
     fn from(color_type: ColorType) -> Self {
         match color_type {
-            ColorType::L8 | ColorType::La8 | ColorType::Rgb8 | ColorType::Rgba8 => ComputeFormat::U8,
-            ColorType::L16 | ColorType::La16 | ColorType::Rgb16 | ColorType::Rgba16 => ComputeFormat::U16,
-            ColorType::Rgb32F | ColorType::Rgba32F => ComputeFormat::F32,
+            ColorType::L8 | ColorType::La8 | ColorType::Rgb8 | ColorType::Rgba8 => SourceFormat::U8,
+            ColorType::L16 | ColorType::La16 | ColorType::Rgb16 | ColorType::Rgba16 => SourceFormat::U16,
+            ColorType::Rgb32F | ColorType::Rgba32F => SourceFormat::F32,
             _ => panic!("Unsupported color type"),
         }
     }
@@ -36,12 +38,13 @@ pub struct DirectoryImageLoader {
     image_bytes_per_image: usize,
     image_total_bytes_per_batch: usize,
     image_color_type: ColorType,
-    image_compute_format: ComputeFormat,
+    image_source_format: SourceFormat,
     config: DataLoaderConfig,
+    thread_pool: Arc<ThreadPool>,
 }
 
 impl DirectoryImageLoader {
-    fn new_from_imagedirectory(dir: &str, config: Option<DataLoaderConfig>) -> Result<Self, DataLoaderError> {
+    pub fn new(dir: &str, config: Option<DataLoaderConfig>, thread_pool: Arc<ThreadPool>) -> Result<Self, DataLoaderError> {
         let path = Path::new(dir);
         if !path.exists() {
             return Err(DataLoaderError::DirectoryNotFound(dir.to_string()));
@@ -64,8 +67,9 @@ impl DirectoryImageLoader {
             image_bytes_per_image: 0,
             image_total_bytes_per_batch: 0,
             image_color_type: ColorType::Rgb32F,
-            image_compute_format: ComputeFormat::F32,
+            image_source_format: SourceFormat::F32,
             config: config.unwrap_or_default(),
+            thread_pool
         };
 
         loader.load_dataset()?;
@@ -123,7 +127,7 @@ impl DirectoryImageLoader {
         self.image_bytes_per_pixel = img.color().bytes_per_pixel() as u32;
 
         self.image_color_type = img.color();
-        self.image_compute_format = ComputeFormat::from(img.color());
+        self.image_source_format = SourceFormat::from(img.color());
 
         self.image_bytes_per_image = self.image_width as usize * self.image_height as usize * self.image_bytes_per_pixel as usize;
         self.image_total_bytes_per_batch = self.image_bytes_per_image * self.config.batch_size;
@@ -147,19 +151,9 @@ impl DirectoryImageLoader {
 }
 
 impl DataLoader for DirectoryImageLoader {
-    type Item = PathBuf;
-    type Batch = Vec<PathBuf>;
+    type BatchDataReference = Vec<PathBuf>;
 
-    fn new(source: DataSource, config: Option<DataLoaderConfig>) -> Result<Self, DataLoaderError> {
-        match source {
-            DataSource::ImageDirectory { path, recursive } => {
-                Ok(Self::new_from_imagedirectory(path, config)?)
-            },
-            _ => Err(DataLoaderError::VulkanLoadError("Invalid data source type".into())),
-        }
-    }
-
-    fn get_batch(&self, split: DatasetSplit, batch_number: usize) -> Option<Self::Batch> {
+    fn get_batch(&self, split: DatasetSplit, batch_number: usize) -> Option<Self::BatchDataReference> {
         let (train_size, test_size, _) = self.get_split_sizes();
         let (start_index, end_index) = match split {
             DatasetSplit::Train => (0, train_size),
@@ -213,6 +207,37 @@ impl DataLoader for DirectoryImageLoader {
         self.dataset_indices[train_size..train_size + test_size].shuffle(&mut *rng);
         self.dataset_indices[train_size + test_size..].shuffle(&mut *rng);
         Ok(())
+    }
+
+    fn create_batch_work(&self, batch_number: usize, paths: Vec<PathBuf>) -> WorkType {
+        let batch_size = paths.len();
+        WorkType::LoadImageBatch {
+            batch_number,
+            paths,
+            image_total_bytes_per_batch: self.image_total_bytes_per_batch,
+            image_bytes_per_image: self.image_bytes_per_image,
+            image_color_type: self.image_color_type,
+            batch_size,
+            thread_pool: self.get_thread_pool()
+        }
+    }
+
+    fn process_work_result(&self, result: WorkResult, expected_batch: usize) -> DataBatch {
+        match result {
+            WorkResult::LoadImageBatch { batch, batch_number } => {
+                debug_assert_eq!(batch_number, expected_batch);
+                batch
+            },
+            _ => panic!("Unexpected work result type"),
+        }
+    }
+
+    fn get_config(&self) -> &DataLoaderConfig {
+        &self.config
+    }
+
+    fn get_thread_pool(&self) -> Arc<ThreadPool> {
+        self.thread_pool.clone()
     }
 
     fn len(&self) -> usize {

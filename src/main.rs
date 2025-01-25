@@ -1,18 +1,11 @@
 mod gpu;
 
 use compute::compute_manager::ComputeManager;
+use dataloader::{config::DataLoaderConfig, data_batch::DataBatch, dataloader::{DataLoader, DatasetSplit}, for_imagesdir::DirectoryImageLoader, par_iter::MultithreadedDataLoaderIterator};
 use gpu::vk_gpu::GPU;
 
-mod utils;
 use model::{layer::LayerType, model::ModelDesc, weight_init::WeightInit};
 use thread_pool::thread_pool::ThreadPool;
-use utils::{
-    dataloader_config::DataLoaderConfig,
-    dataloader_for_images::{DataLoaderForImages, DatasetSplit},
-    dataloader_info::print_dataset_info,
-    dataloader_iter::MultithreadedDataLoaderIterator,
-    image_batch::ImageBatch
-};
 
 mod thread_pool;
 
@@ -75,43 +68,56 @@ fn main() {
         test_ratio: 0.0,
         drop_last: false,
         prefetch_count: 4,
-        thread_pool: thread_pool.clone(),
         ..Default::default()
     }
     .build()
     .unwrap();
 
-    let dl = DataLoaderForImages::new_arc("/home/lucas/Documents/mnist_png/test/0", Some(config)).unwrap();
+    let dl = DirectoryImageLoader::new("/home/lucas/Documents/mnist_png/test/0", Some(config), thread_pool.clone()).unwrap();
 
-    print_dataset_info(&dl);
+    //let dl = DataLoaderForImages::new_arc("/home/lucas/Documents/mnist_png/test/0", Some(config)).unwrap();
+
+    dataloader::info::print_dataset_info(&dl);
 
     // Currently the final partial batch has 0 as it's values after the valid image data as intended
     // As iterator reuses the struct. But since we have a set size array it must keep the size, hence partial batches have extra 0s, which works out for us
+    // Need to not move DataLoader value for the iteration, and try not to use an arc
     for batch in dl.par_iter(DatasetSplit::Train) {
         println!();
         println!("BATCH NUM: {:?}", batch.batch_number);
-        println!("BATCH LEN!: {:?}", batch.images_this_batch);
-        println!("BATCH DATALEN!: {:?}", batch.image_data.len());
-        println!("ADDR: {:p}", &batch.images_this_batch);
+        println!("BATCH LEN!: {:?}", batch.samples_in_batch);
+        println!("BATCH DATALEN!: {:?}", batch.data.len());
+        println!("ADDR: {:p}", &batch.data);
     }
 
-    
     // - - - - GPU testing - - - -
     // We can interact with GPU instances to test, but all models should use a compute_manager instead
     // Own scope so GPU is cleared between testing areas
     // Drop GPU works properly
     {
-        let mut imgb_test1 = ImageBatch::new(16, 0, 0, image::ColorType::L8, 0);
-        imgb_test1.image_data[..16].copy_from_slice(&[10, 20, 30, 15, 20, 30, 15, 10, 10, 20, 30, 15, 20, 30, 15, 10]);
-
-        let mut imgb_test2 = ImageBatch::new(16, 0, 0, image::ColorType::L8, 0);
-        imgb_test2.image_data[..16].copy_from_slice(&[1, 2, 3, 1, 2, 3, 1, 1, 1, 2, 3, 1, 2, 3, 1, 1]);
+        let mut data_test1 = DataBatch {
+            data: vec![10, 20, 30, 15, 20, 30, 15, 10, 10, 20, 30, 15, 20, 30, 15, 10].into_boxed_slice(),
+            samples_in_batch: 0,
+            bytes_per_sample: 0,
+            format: dataloader::dataloader::SourceFormat::U8,
+            labels: None,
+            batch_number: 0,
+        };
+        
+        let mut data_test2 = DataBatch {
+            data: vec![1, 2, 3, 1, 2, 3, 1, 1, 1, 2, 3, 1, 2, 3, 1, 1].into_boxed_slice(),
+            samples_in_batch: 0,
+            bytes_per_sample: 0,
+            format: dataloader::dataloader::SourceFormat::U8,
+            labels: None,
+            batch_number: 0,
+        };
 
         // Initialize GPU
         // NOTE: All GPU computations are f32 for now
         let gpu = GPU::new(0).unwrap();
-        let gpu_mem1 = gpu.move_to_gpu_as_f32(&imgb_test1.to_f32()).unwrap();
-        let gpu_mem2 = gpu.move_to_gpu_as_f32(&imgb_test2.to_f32()).unwrap();
+        let gpu_mem1 = gpu.move_to_gpu_as_f32(&data_test1.to_f32()).unwrap();
+        let gpu_mem2 = gpu.move_to_gpu_as_f32(&data_test2.to_f32()).unwrap();
         gpu.add(&gpu_mem1, &gpu_mem2).unwrap();
 
         println!("{:?}", gpu.read_memory(&gpu_mem1).unwrap());
@@ -120,23 +126,6 @@ fn main() {
     // Turns out NVIDIA vulkan can eat .spv that is still text
     // while intel needs it validated and compiled...
     // Doing this at runtime requires external c++ libraries so this code will just have to ship with manually validated shaders
-
-    {
-        let mut imgb_test1 = ImageBatch::new(16, 0, 0, image::ColorType::L8, 0);
-        imgb_test1.image_data[..16].copy_from_slice(&[10, 20, 30, 15, 20, 30, 15, 10, 10, 20, 30, 15, 20, 30, 15, 10]);
-
-        let mut imgb_test2 = ImageBatch::new(16, 0, 0, image::ColorType::L8, 0);
-        imgb_test2.image_data[..16].copy_from_slice(&[1, 2, 3, 1, 2, 3, 1, 1, 1, 2, 3, 1, 2, 3, 1, 1]);
-
-        // Initialize GPU
-        // NOTE: All GPU computations are f32 for now
-        let gpu = GPU::new(1).unwrap();
-        let gpu_mem1 = gpu.move_to_gpu_as_f32(&imgb_test1.to_f32()).unwrap();
-        let gpu_mem2 = gpu.move_to_gpu_as_f32(&imgb_test2.to_f32()).unwrap();
-        gpu.add(&gpu_mem1, &gpu_mem2).unwrap();
-
-        println!("{:?}", gpu.read_memory(&gpu_mem1).unwrap());
-    }
 
     // - - - - Model and Compute Manager testing - - - -
 

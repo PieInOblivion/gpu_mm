@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use crate::utils::dataloader_error::DataLoaderError;
+
+use crate::dataloader::error::DataLoaderError;
 
 pub struct MemoryTracker {
     maximum: u64,

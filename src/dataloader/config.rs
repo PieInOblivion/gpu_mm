@@ -1,11 +1,8 @@
-use std::num::NonZero;
 use std::sync::{Arc, Mutex};
-use std::thread;
 
 use rand::rngs::StdRng;
 
-use crate::thread_pool::thread_pool::ThreadPool;
-use crate::utils::dataloader_error::DataLoaderError;
+use super::error::DataLoaderError;
 
 // TODO: Make bad values impossible using NonZeroUsize etc
 // Downside is it becomes annoying to use having to .into() and NonZeroUsize::new everywhere...
@@ -21,7 +18,6 @@ pub struct DataLoaderConfig {
     pub shuffle_seed: Option<u64>,
     pub rng: Option<Arc<Mutex<StdRng>>>,
     pub drop_last: bool,
-    pub thread_pool: Arc<ThreadPool>
 }
 
 impl DataLoaderConfig {
@@ -44,7 +40,6 @@ impl Default for DataLoaderConfig {
             shuffle_seed: None,
             rng: None,
             drop_last: true,
-            thread_pool: ThreadPool::new()
         }
     }
 }

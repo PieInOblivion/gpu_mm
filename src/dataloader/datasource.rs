@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 pub enum DataSource {
     ImageDirectory {
         path: PathBuf,

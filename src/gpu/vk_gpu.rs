@@ -1,7 +1,7 @@
 use ash::{vk, Entry, Instance, Device};
 use std::{ffi::CString, ptr, sync::Arc};
 
-use crate::{compute::memory_tracker::MemoryTracker, utils::dataloader_error::DataLoaderError};
+use crate::{compute::memory_tracker::MemoryTracker, dataloader::error::DataLoaderError};
 
 use super::vk_gpu_info::GPUInfo;
 

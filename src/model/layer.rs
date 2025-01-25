@@ -1,4 +1,4 @@
-use crate::utils::dataloader_error::DataLoaderError;
+use crate::dataloader::error::DataLoaderError;
 
 use super::tensor::TensorDesc;
 

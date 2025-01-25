@@ -1,6 +1,8 @@
-use crate::utils::dataloader_error::DataLoaderError;
+use std::sync::Arc;
 
-use super::datasource::DataSource;
+use crate::thread_pool::{thread_pool::ThreadPool, worker::{WorkResult, WorkType}};
+
+use super::{config::DataLoaderConfig, data_batch::DataBatch, error::DataLoaderError};
 
 #[derive(Copy, Clone)]
 pub enum DatasetSplit {
@@ -10,25 +12,32 @@ pub enum DatasetSplit {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum ComputeFormat {
+pub enum SourceFormat {
     U8,
     U16,
     F32,
 }
 
+impl SourceFormat {
+    pub fn bytes_per_element(&self) -> usize {
+        match self {
+            SourceFormat::U8 => 1,
+            SourceFormat::U16 => 2,
+            SourceFormat::F32 => 4,
+        }
+    }
+}
+
 pub trait DataLoader {
-    type Item;
-    type Batch;
+    type BatchDataReference;
 
-    fn new(source: DataSource, config: Option<DataLoaderConfig>) -> Result<Self, DataLoaderError>
-    where
-        Self: Sized;
-
-    fn get_batch(&self, split: DatasetSplit, batch_number: usize) -> Option<Self::Batch>;
+    fn get_batch(&self, split: DatasetSplit, batch_number: usize) -> Option<Self::BatchDataReference>;
     fn shuffle_whole_dataset(&mut self) -> Result<(), DataLoaderError>;
     fn shuffle_individual_datasets(&mut self) -> Result<(), DataLoaderError>;
     fn len(&self) -> usize;
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
+    fn get_config(&self) -> &DataLoaderConfig;
+    fn get_thread_pool(&self) -> Arc<ThreadPool>;
+
+    fn create_batch_work(&self, batch_number: usize, batch_data_ref: Self::BatchDataReference) -> WorkType;
+    fn process_work_result(&self, result: WorkResult, expected_batch: usize) -> DataBatch;
 }

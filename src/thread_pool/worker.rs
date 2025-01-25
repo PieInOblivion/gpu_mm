@@ -4,12 +4,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::VecDeque;
 use std::thread;
 
+use crate::dataloader::data_batch::DataBatch;
 use crate::model::weight_init::WeightInit;
-use crate::utils;
+use image::ColorType;
 use rand::distributions::Uniform;
 use rand::prelude::Distribution;
-use utils::dataloader_for_images::DataLoaderForImages;
-use utils::image_batch::ImageBatch;
+
+use super::thread_pool::ThreadPool;
 
 #[derive(Copy, Clone)]
 pub struct DataPtrU8(pub *mut u8);
@@ -23,9 +24,13 @@ unsafe impl Sync for DataPtrF32 {}
 
 pub enum WorkType {
     LoadImageBatch {
-        dataloader: Arc<DataLoaderForImages>,
         batch_number: usize,
         paths: Vec<PathBuf>,
+        image_total_bytes_per_batch: usize,
+        image_bytes_per_image: usize,
+        image_color_type: ColorType,
+        batch_size: usize,
+        thread_pool: Arc<ThreadPool>
     },
     LoadSingleImage {
         path: PathBuf,
@@ -46,7 +51,7 @@ pub enum WorkType {
 pub enum WorkResult {
     LoadImageBatch {
         batch_number: usize,
-        batch: ImageBatch,
+        batch: DataBatch,
     },
     LoadSingleImage,
     WeightInitChunk
@@ -64,7 +69,15 @@ impl WorkFuture {
         }
     }
 
-    pub fn wait(self) -> WorkResult {
+    pub fn wait(&self) {
+        let (lock, cvar) = &*self.state;
+        let mut result = lock.lock().unwrap();
+        while result.is_none() {
+            result = cvar.wait(result).unwrap();
+        }
+    }
+
+    pub fn wait_and_take(self) -> WorkResult {
         let (lock, cvar) = &*self.state;
         let mut result = lock.lock().unwrap();
         while result.is_none() {
@@ -153,7 +166,7 @@ impl WorkFutureBatch {
     pub fn wait(self) -> Vec<WorkResult> {
         self.futures
             .into_iter()
-            .map(|future| future.wait())
+            .map(|future| future.wait_and_take())
             .collect()
     }
 }
@@ -181,8 +194,8 @@ impl Worker {
 
     fn process_work(work_queue: &Arc<WorkQueue>, work_item: WorkItem) {
         let result = match work_item.work {
-            WorkType::LoadImageBatch {dataloader, batch_number, paths} => {
-                Self::load_image_batch(work_queue, dataloader, batch_number, paths)
+            WorkType::LoadImageBatch {batch_number, paths, image_total_bytes_per_batch, image_bytes_per_image, image_color_type, batch_size, thread_pool} => {
+                Self::load_image_batch(work_queue, batch_number, paths, image_total_bytes_per_batch, image_bytes_per_image, image_color_type, batch_size, thread_pool)
             },
             WorkType::LoadSingleImage {path, start_idx, end_idx, data_ptr} => {
                 Self::load_single_image(path, start_idx, end_idx, data_ptr)
@@ -196,27 +209,29 @@ impl Worker {
     }
 
     fn load_image_batch(work_queue: &Arc<WorkQueue>,
-        dataloader: Arc<DataLoaderForImages>,
         batch_number: usize,
-        paths: Vec<PathBuf>
+        paths: Vec<PathBuf>, 
+        image_total_bytes_per_batch: usize,
+        image_bytes_per_image: usize,
+        image_color_type: ColorType,
+        batch_size: usize,
+        thread_pool: Arc<ThreadPool>
     ) -> WorkResult {
-        let mut batch = ImageBatch::new(
-            dataloader.image_total_bytes_per_batch,
-            dataloader.config.batch_size,
-            dataloader.image_bytes_per_image,
-            dataloader.image_color_type,
+        let mut batch = DataBatch {
+            data: vec![0u8; image_total_bytes_per_batch].into_boxed_slice(),
+            samples_in_batch: paths.len(),
+            bytes_per_sample: image_bytes_per_image,
+            format: image_color_type.into(),
+            labels: None,
             batch_number
-        );
+        };
 
-        batch.images_this_batch = paths.len();
-
-        let data_ptr = DataPtrU8(batch.image_data.as_mut_ptr());
-
+        let data_ptr = DataPtrU8(batch.data.as_mut_ptr());
 
         let work_items = paths.iter().enumerate()
             .map(|(idx, path)| {
-                let start = idx * dataloader.image_bytes_per_image;
-                let end = start + dataloader.image_bytes_per_image;
+                let start = idx * image_bytes_per_image;
+                let end = start + image_bytes_per_image;
                 
                 WorkType::LoadSingleImage {
                     path: path.clone(),
@@ -227,7 +242,7 @@ impl Worker {
             })
             .collect();
 
-        let work_batch = dataloader.config.thread_pool.submit_batch(work_items);
+        let work_batch = thread_pool.submit_batch(work_items);
 
         // TODO: Try generalise the work while waiting pattern
         // Process other work while waiting for image to load
