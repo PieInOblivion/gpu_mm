@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::thread_pool::{thread_pool::ThreadPool, worker::{WorkResult, WorkType}};
 
-use super::{config::DataLoaderConfig, data_batch::DataBatch, error::DataLoaderError};
+use super::{config::DataLoaderConfig, data_batch::DataBatch, error::VKMLEngineError};
 
 #[derive(Copy, Clone)]
 pub enum DatasetSplit {
@@ -32,8 +32,8 @@ pub trait DataLoader {
     type BatchDataReference;
 
     fn get_batch(&self, split: DatasetSplit, batch_number: usize) -> Option<Self::BatchDataReference>;
-    fn shuffle_whole_dataset(&mut self) -> Result<(), DataLoaderError>;
-    fn shuffle_individual_datasets(&mut self) -> Result<(), DataLoaderError>;
+    fn shuffle_whole_dataset(&mut self) -> Result<(), VKMLEngineError>;
+    fn shuffle_individual_datasets(&mut self) -> Result<(), VKMLEngineError>;
     fn len(&self) -> usize;
     fn get_config(&self) -> &DataLoaderConfig;
     fn get_thread_pool(&self) -> Arc<ThreadPool>;

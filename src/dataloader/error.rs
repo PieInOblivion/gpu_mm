@@ -2,19 +2,20 @@ use thiserror::Error;
 
 // TODO: Seperate concerns of error types
 #[derive(Error, Debug)]
-pub enum DataLoaderError {
-    // DataLoader errors
+pub enum VKMLEngineError {
+    // IO and System Errors
     #[error("Directory not found: {0}")]
     DirectoryNotFound(String),
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
-    #[error("Invalid dataset split ratios. Train: {train}, Test: {test}")]
-    InvalidSplitRatios { train: f32, test: f32 },
-
     #[error("Image error: {0}")]
     ImageError(#[from] image::ImageError),
+
+    // TODO: Redo error types and such
+    #[error("Invalid dataset split ratios. Train: {train}, Test: {test}")]
+    InvalidSplitRatios { train: f32, test: f32 },
 
     #[error("No images found in the dataset")]
     EmptyDataset,

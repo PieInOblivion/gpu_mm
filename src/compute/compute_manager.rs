@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    dataloader::error::DataLoaderError, gpu::vk_gpu::{GPUMemory, GPU}, model::{layer::{LayerDesc, LayerType}, model::ModelDesc, tensor::TensorDesc}, thread_pool::{thread_pool::ThreadPool, worker::{DataPtrF32, WorkType}}};
+    dataloader::error::VKMLEngineError, gpu::vk_gpu::{GPUMemory, GPU}, model::{layer::{LayerDesc, LayerType}, model::ModelDesc, tensor::TensorDesc}, thread_pool::{thread_pool::ThreadPool, worker::{DataPtrF32, WorkType}}};
 
 use super::cpu_compute::CPUCompute;
 
@@ -41,12 +41,12 @@ pub struct ComputeManager {
 }
 
 impl ComputeManager {
-    pub fn new(desc: ModelDesc, thread_pool: Arc<ThreadPool>) -> Result<Self, DataLoaderError> {
+    pub fn new(desc: ModelDesc, thread_pool: Arc<ThreadPool>) -> Result<Self, VKMLEngineError> {
         let gpus = Self::available_gpus()?;
         Self::new_with(desc, gpus, None, thread_pool)
     }
 
-    pub fn new_with(desc: ModelDesc, gpus: Vec<GPU>, cpu_memory_limit_bytes: Option<u64>, thread_pool: Arc<ThreadPool>) -> Result<Self, DataLoaderError> {
+    pub fn new_with(desc: ModelDesc, gpus: Vec<GPU>, cpu_memory_limit_bytes: Option<u64>, thread_pool: Arc<ThreadPool>) -> Result<Self, VKMLEngineError> {
         let cpu = CPUCompute::new(cpu_memory_limit_bytes, thread_pool.clone());
 
         let total_memory = desc.total_memory_requirements();
@@ -58,7 +58,7 @@ impl ComputeManager {
         // This will not be the most accurate as it doesn't account for any allocation overhead
         // but should be close enough for this concept
         if total_memory > total_available {
-            return Err(DataLoaderError::OutOfMemory(
+            return Err(VKMLEngineError::OutOfMemory(
                 format!("Model requires {} bytes but only {} available", 
                     total_memory, total_available)
             ));
@@ -84,7 +84,7 @@ impl ComputeManager {
         Ok(manager)
     }
 
-    pub fn available_gpus() -> Result<Vec<GPU>, DataLoaderError> {
+    pub fn available_gpus() -> Result<Vec<GPU>, VKMLEngineError> {
         let gpu_info = GPU::available_gpus()?;
         let mut gpus = Vec::with_capacity(gpu_info.len());
         
@@ -97,17 +97,9 @@ impl ComputeManager {
         Ok(gpus)
     }
 
-    fn find_optimal_device(&mut self, size: u64) -> Result<DeviceLocation, DataLoaderError> {
-        // Try current GPU first
-        if self.upto_gpu < self.gpus.len() {
-            let gpu = &self.gpus[self.upto_gpu];
-            if size <= gpu.available_memory() {
-                return Ok(DeviceLocation::GPU(self.upto_gpu));
-            }
-        }
-
-        // Try subsequent GPUs
-        for idx in (self.upto_gpu + 1)..self.gpus.len() {
+    fn find_optimal_device(&mut self, size: u64) -> Result<DeviceLocation, VKMLEngineError> {
+        // Only check GPUs starting from our current one to maintain sequential blocks
+        for idx in self.upto_gpu..self.gpus.len() {
             let gpu = &self.gpus[idx];
             if size <= gpu.available_memory() {
                 self.upto_gpu = idx;
@@ -117,13 +109,16 @@ impl ComputeManager {
 
         // If no GPU has enough memory, try CPU
         if self.cpu.memory_tracking.get_available() >= size {
+            // Rust creates empy range when the start is equal or greater than end
+            // Has one downside that if someone runs code with 18446744073709551615 GPUS on 64bit systems or 4294967295 on 32bit systems it will skip their last GPU :(
+            self.upto_gpu = usize::MAX;
             Ok(DeviceLocation::CPU)
         } else {
-            Err(DataLoaderError::OutOfMemory("No device has enough memory".into()))
+            Err(VKMLEngineError::OutOfMemory("No device has enough memory".into()))
         }
     }
 
-    fn allocate_layer(&mut self, layer_desc: LayerDesc, target_device: &DeviceLocation) -> Result<ComputeLayer, DataLoaderError> {
+    fn allocate_layer(&mut self, layer_desc: LayerDesc, target_device: &DeviceLocation) -> Result<ComputeLayer, VKMLEngineError> {
         let (weights, biases) = if layer_desc.requires_parameters {
             (
                 self.allocate_tensor(&layer_desc.weights, target_device)?,
@@ -164,7 +159,7 @@ impl ComputeManager {
     }
 
     fn allocate_tensor(&mut self, desc: &TensorDesc, target_device: &DeviceLocation) 
-        -> Result<ComputeTensor, DataLoaderError> {
+        -> Result<ComputeTensor, VKMLEngineError> {
         // Allocate memory on target device
         let size_in_bytes = desc.size() as u64;
 
@@ -194,7 +189,7 @@ impl ComputeManager {
                 gpu.allocate_memory(size_in_bytes)?;
                 
                 let gpu_memory = gpu.move_to_gpu_as_f32(&initial_data)
-                    .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                    .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                 
                 ComputeLocation::GPU {
                     gpu_idx: *idx,
@@ -213,7 +208,7 @@ impl ComputeManager {
         &self,
         tensor: &mut ComputeTensor,
         target_device: &DeviceLocation
-    ) -> Result<(), DataLoaderError> {
+    ) -> Result<(), VKMLEngineError> {
         // If tensor is Parameterless, no need to move anything
         if let ComputeLocation::Parameterless = tensor.location {
             return Ok(());
@@ -249,7 +244,7 @@ impl ComputeManager {
                         // CPU to GPU
                         let gpu = &self.gpus[*idx];
                         let gpu_mem = gpu.move_to_gpu_as_f32(data)
-                            .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                            .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
     
                         ComputeLocation::GPU {
                             gpu_idx: *idx,
@@ -264,7 +259,7 @@ impl ComputeManager {
                         // GPU to CPU
                         let gpu = &self.gpus[*gpu_idx];
                         let cpu_data = gpu.read_memory(memory)
-                            .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                            .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                         
                         ComputeLocation::CPU(cpu_data)
                     },
@@ -272,11 +267,11 @@ impl ComputeManager {
                         // GPU to different GPU
                         let source_gpu = &self.gpus[*gpu_idx];
                         let cpu_data = source_gpu.read_memory(memory)
-                            .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                            .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                         
                         let target_gpu = &self.gpus[*target_idx];
                         let new_gpu_mem = target_gpu.move_to_gpu_as_f32(&cpu_data)
-                            .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                            .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                         
                         ComputeLocation::GPU {
                             gpu_idx: *target_idx,
@@ -304,7 +299,7 @@ impl ComputeManager {
         Ok(())
     }
 
-    pub fn move_model_to_cpu(&mut self) -> Result<(), DataLoaderError> {
+    pub fn move_model_to_cpu(&mut self) -> Result<(), VKMLEngineError> {
         // First check if we have enough CPU memory for all GPU tensors
         let mut total_size_needed: u64 = 0;
         
@@ -325,7 +320,7 @@ impl ComputeManager {
         
         // Check if we have enough CPU memory available
         if total_size_needed > self.cpu.memory_tracking.get_available() {
-            return Err(DataLoaderError::OutOfMemory(
+            return Err(VKMLEngineError::OutOfMemory(
                 format!("Not enough CPU memory to move GPU tensors: need {} bytes but only {} available",
                     total_size_needed, self.cpu.memory_tracking.get_available())
             ));
@@ -360,7 +355,7 @@ impl ComputeManager {
             if let ComputeLocation::GPU { ref memory, .. } = tensor.location {
                 // Read the data from GPU
                 let data = self.gpus[gpu_idx].read_memory(memory)
-                    .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                    .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                 
                 // Allocate CPU memory
                 let size = tensor.desc.size() as u64;
@@ -482,9 +477,9 @@ impl ComputeManager {
         }
     }
 
-    pub fn print_layer_values(&self, layer_idx: usize) -> Result<(), DataLoaderError> {
+    pub fn print_layer_values(&self, layer_idx: usize) -> Result<(), VKMLEngineError> {
         if layer_idx >= self.layers.len() {
-            return Err(DataLoaderError::VulkanLoadError(
+            return Err(VKMLEngineError::VulkanLoadError(
                 format!("Layer index {} out of bounds (max {})", layer_idx, self.layers.len() - 1)
             ));
         }
@@ -562,7 +557,7 @@ impl ComputeManager {
                 },
                 ComputeLocation::GPU { gpu_idx, memory } => {
                     let data = self.gpus[*gpu_idx].read_memory(memory)
-                        .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                        .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                     print_tensor_info("Weights", &layer.weights, Some(*gpu_idx), &data, &layer.weights.desc.shape);
                 },
                 ComputeLocation::Parameterless => {
@@ -576,7 +571,7 @@ impl ComputeManager {
                 },
                 ComputeLocation::GPU { gpu_idx, memory } => {
                     let data = self.gpus[*gpu_idx].read_memory(memory)
-                        .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                        .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                     print_tensor_info("Biases", &layer.biases, Some(*gpu_idx), &data, &layer.biases.desc.shape);
                 },
                 ComputeLocation::Parameterless => {
@@ -594,7 +589,7 @@ impl ComputeManager {
             },
             ComputeLocation::GPU { gpu_idx, memory } => {
                 let data = self.gpus[*gpu_idx].read_memory(memory)
-                    .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                    .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                 print_tensor_info("Activations", &layer.activations, Some(*gpu_idx), &data, &layer.activations.desc.shape);
             },
             ComputeLocation::Parameterless => {

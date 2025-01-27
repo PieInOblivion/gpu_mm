@@ -1,7 +1,7 @@
 use ash::{vk, Entry, Instance, Device};
 use std::{ffi::CString, ptr, sync::Arc};
 
-use crate::{compute::memory_tracker::MemoryTracker, dataloader::error::DataLoaderError};
+use crate::{compute::memory_tracker::MemoryTracker, dataloader::error::VKMLEngineError};
 
 use super::vk_gpu_info::GPUInfo;
 
@@ -346,16 +346,16 @@ impl GPU {
         }
     }
 
-    pub fn available_gpus() -> Result<Vec<GPUInfo>, DataLoaderError> {
+    pub fn available_gpus() -> Result<Vec<GPUInfo>, VKMLEngineError> {
         unsafe {
             let entry = Entry::load()
-                .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                 
             let instance = Self::create_instance(&entry)
-                .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
             
             let physical_devices = instance.enumerate_physical_devices()
-                .map_err(|e| DataLoaderError::VulkanLoadError(e.to_string()))?;
+                .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                 
             // Create GPUInfo for each device and filter for compute support
             let mut gpu_infos: Vec<_> = physical_devices.iter()
@@ -744,7 +744,7 @@ impl GPU {
         }
     }
 
-    pub fn allocate_memory(&self, size: u64) -> Result<(), DataLoaderError> {
+    pub fn allocate_memory(&self, size: u64) -> Result<(), VKMLEngineError> {
         self.memory_tracker.allocate(size)
     }
 

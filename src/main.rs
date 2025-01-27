@@ -160,7 +160,7 @@ fn main() {
         }]
     );
 
-    let mut cm = ComputeManager::new(m, thread_pool.clone()).unwrap();
+    let cm = ComputeManager::new(m, thread_pool.clone()).unwrap();
     
     //cm.move_model_to_cpu().unwrap();
     

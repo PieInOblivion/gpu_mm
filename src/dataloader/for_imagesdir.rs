@@ -13,7 +13,7 @@ use crate::thread_pool::worker::{WorkResult, WorkType};
 use super::config::DataLoaderConfig;
 use super::data_batch::DataBatch;
 use super::dataloader::{SourceFormat, DataLoader, DatasetSplit};
-use super::error::DataLoaderError;
+use super::error::VKMLEngineError;
 
 impl From<ColorType> for SourceFormat {
     fn from(color_type: ColorType) -> Self {
@@ -44,10 +44,10 @@ pub struct DirectoryImageLoader {
 }
 
 impl DirectoryImageLoader {
-    pub fn new(dir: &str, config: Option<DataLoaderConfig>, thread_pool: Arc<ThreadPool>) -> Result<Self, DataLoaderError> {
+    pub fn new(dir: &str, config: Option<DataLoaderConfig>, thread_pool: Arc<ThreadPool>) -> Result<Self, VKMLEngineError> {
         let path = Path::new(dir);
         if !path.exists() {
-            return Err(DataLoaderError::DirectoryNotFound(dir.to_string()));
+            return Err(VKMLEngineError::DirectoryNotFound(dir.to_string()));
         }
 
         let valid_extensions = image::ImageFormat::all()
@@ -78,7 +78,7 @@ impl DirectoryImageLoader {
         Ok(loader)
     }
 
-    fn load_dataset(&mut self) -> Result<(), DataLoaderError> {
+    fn load_dataset(&mut self) -> Result<(), VKMLEngineError> {
         // TODO: Use thread pool and batch work
         self.dataset = std::fs::read_dir(&self.dir)?
             .filter_map(Result::ok)
@@ -92,7 +92,7 @@ impl DirectoryImageLoader {
             .collect();
 
         if self.dataset.is_empty() {
-            return Err(DataLoaderError::EmptyDataset);
+            return Err(VKMLEngineError::EmptyDataset);
         }
 
         // read_dir does not guarantee consistancy or sorting of any kind since filesystems don't either
@@ -118,7 +118,7 @@ impl DirectoryImageLoader {
         Ok(())
     }
 
-    fn scan_first_image(&mut self) -> Result<(), DataLoaderError> {
+    fn scan_first_image(&mut self) -> Result<(), VKMLEngineError> {
         let first_image_path = PathBuf::from(&self.dir).join(&*self.dataset[0]);
         let img = image::open(first_image_path)?;
         self.image_width = img.width();
@@ -186,22 +186,22 @@ impl DataLoader for DirectoryImageLoader {
         Some(paths)
     }
 
-    fn shuffle_whole_dataset(&mut self) -> Result<(), DataLoaderError> {
+    fn shuffle_whole_dataset(&mut self) -> Result<(), VKMLEngineError> {
         let mut rng = self.config.rng.as_ref()
-            .ok_or(DataLoaderError::RngNotSet)?
+            .ok_or(VKMLEngineError::RngNotSet)?
             .lock()
-            .map_err(|_| DataLoaderError::RngLockError)?;
+            .map_err(|_| VKMLEngineError::RngLockError)?;
         self.dataset_indices.shuffle(&mut *rng);
         Ok(())
     }
 
-    fn shuffle_individual_datasets(&mut self) -> Result<(), DataLoaderError> {
+    fn shuffle_individual_datasets(&mut self) -> Result<(), VKMLEngineError> {
         let (train_size, test_size, _) = self.get_split_sizes();
 
         let mut rng = self.config.rng.as_ref()
-            .ok_or(DataLoaderError::RngNotSet)?
+            .ok_or(VKMLEngineError::RngNotSet)?
             .lock()
-            .map_err(|_| DataLoaderError::RngLockError)?;
+            .map_err(|_| VKMLEngineError::RngLockError)?;
 
         self.dataset_indices[0..train_size].shuffle(&mut *rng);
         self.dataset_indices[train_size..train_size + test_size].shuffle(&mut *rng);

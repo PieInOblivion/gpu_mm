@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use rand::rngs::StdRng;
 
-use super::error::DataLoaderError;
+use super::error::VKMLEngineError;
 
 // TODO: Make bad values impossible using NonZeroUsize etc
 // Downside is it becomes annoying to use having to .into() and NonZeroUsize::new everywhere...
@@ -21,7 +21,7 @@ pub struct DataLoaderConfig {
 }
 
 impl DataLoaderConfig {
-    pub fn build(self) -> Result<Self, DataLoaderError> {
+    pub fn build(self) -> Result<Self, VKMLEngineError> {
         check_split_ratios(self.train_ratio, self.test_ratio)?;
 
         Ok(self)
@@ -44,9 +44,9 @@ impl Default for DataLoaderConfig {
     }
 }
 
-fn check_split_ratios(train_ratio: f32, test_ratio: f32) -> Result<(), DataLoaderError> {
+fn check_split_ratios(train_ratio: f32, test_ratio: f32) -> Result<(), VKMLEngineError> {
     if train_ratio + test_ratio > 1.0 || train_ratio <= 0.0 || test_ratio < 0.0 {
-        return Err(DataLoaderError::InvalidSplitRatios {
+        return Err(VKMLEngineError::InvalidSplitRatios {
             train: train_ratio,
             test: test_ratio,
         });

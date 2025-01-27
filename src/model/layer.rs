@@ -1,4 +1,4 @@
-use crate::dataloader::error::DataLoaderError;
+use crate::dataloader::error::VKMLEngineError;
 
 use super::tensor::TensorDesc;
 
@@ -85,7 +85,7 @@ impl LayerDesc {
         }
     }
 
-    pub fn output_shape(&self, batch_size: usize, input_shape: Option<&[usize]>) -> Result<Vec<usize>, DataLoaderError> {
+    pub fn output_shape(&self, batch_size: usize, input_shape: Option<&[usize]>) -> Result<Vec<usize>, VKMLEngineError> {
         match &self.layer_type {
             LayerType::Linear { out_features, .. } => {
                 Ok(vec![batch_size, *out_features])
@@ -117,12 +117,12 @@ impl LayerDesc {
             LayerType::GELU |
             LayerType::SiLU => {
                 input_shape.map(|shape| shape.to_vec())
-                    .ok_or_else(|| DataLoaderError::VulkanLoadError(
+                    .ok_or_else(|| VKMLEngineError::VulkanLoadError(
                         "Activation layer requires input shape".into()))
             },
             LayerType::Softmax { dim } => {
                 input_shape.map(|shape| shape.to_vec())
-                    .ok_or_else(|| DataLoaderError::VulkanLoadError(
+                    .ok_or_else(|| VKMLEngineError::VulkanLoadError(
                         format!("Softmax layer requires input shape (dim={})", dim)))
             },
         }
