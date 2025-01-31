@@ -153,7 +153,7 @@ impl DirectoryImageLoader {
 impl DataLoader for DirectoryImageLoader {
     type BatchDataReference = Vec<PathBuf>;
 
-    fn get_batch(&self, split: DatasetSplit, batch_number: usize) -> Option<Self::BatchDataReference> {
+    fn get_batch_reference(&self, split: DatasetSplit, batch_number: usize) -> Option<Self::BatchDataReference> {
         let (train_size, test_size, _) = self.get_split_sizes();
         let (start_index, end_index) = match split {
             DatasetSplit::Train => (0, train_size),

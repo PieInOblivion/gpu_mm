@@ -31,7 +31,7 @@ impl SourceFormat {
 pub trait DataLoader {
     type BatchDataReference;
 
-    fn get_batch(&self, split: DatasetSplit, batch_number: usize) -> Option<Self::BatchDataReference>;
+    fn get_batch_reference(&self, split: DatasetSplit, batch_number: usize) -> Option<Self::BatchDataReference>;
     fn shuffle_whole_dataset(&mut self) -> Result<(), VKMLEngineError>;
     fn shuffle_individual_datasets(&mut self) -> Result<(), VKMLEngineError>;
     fn len(&self) -> usize;

@@ -260,14 +260,14 @@ impl Worker {
 
     fn load_single_image(path: PathBuf, start_idx: usize, end_idx: usize, data_ptr: DataPtrU8) -> WorkResult {
         let img = image::open(path).unwrap();
-        let bytes = img.as_bytes();
-        debug_assert_eq!(bytes.len(), end_idx - start_idx);
+        let img_bytes = img.as_bytes();
+        debug_assert_eq!(img_bytes.len(), end_idx - start_idx);
 
         // SAFETY: Each task has a unique slice range, so no overlapping writes
         // TODO: Benchmark how much faster this is instead of returning each image and having parent thread combine them
         unsafe {
             std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
+                img_bytes.as_ptr(),
                 data_ptr.0.add(start_idx),
                 end_idx - start_idx
             );

@@ -33,7 +33,7 @@ pub struct MultithreadedIterator<T: DataLoader> {
         while self.pending_futures.len() < self.max_pending {
             let batch_number = self.next_batch + self.pending_futures.len();
             
-            if let Some(batch_data) = self.dataloader.get_batch(self.split, batch_number) {
+            if let Some(batch_data) = self.dataloader.get_batch_reference(self.split, batch_number) {
                 let work = self.dataloader.create_batch_work(batch_number, batch_data);
                 let future = self.dataloader.get_thread_pool().submit_work(work);
                 self.pending_futures.push_back(future);
