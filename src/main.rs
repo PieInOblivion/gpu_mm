@@ -4,7 +4,7 @@ use compute::compute_manager::ComputeManager;
 use dataloader::{config::DataLoaderConfig, data_batch::DataBatch, dataloader::{DataLoader, DatasetSplit}, for_imagesdir::DirectoryImageLoader, par_iter::MultithreadedDataLoaderIterator};
 use gpu::vk_gpu::GPU;
 
-use model::{layer_params::LayerType, model::ModelDesc, weight_init::WeightInit};
+use model::{layer_shape::LayerType, model::ModelDesc, weight_init::WeightInit};
 use thread_pool::thread_pool::ThreadPool;
 
 mod thread_pool;

@@ -1,5 +1,5 @@
 #[derive(Clone)]
-pub struct LayerParams {
+pub struct LayerShape {
     // Common parameters
     pub in_features: usize,
     pub out_features: usize,
@@ -17,7 +17,7 @@ pub struct LayerParams {
     pub dim: Option<usize>,     // For Softmax
 }
 
-impl Default for LayerParams {
+impl Default for LayerShape {
     fn default() -> Self {
         Self {
             in_features: 0,
@@ -36,8 +36,8 @@ impl Default for LayerParams {
 
 #[derive(Clone)]
 pub enum LayerType {
-    Linear(LayerParams),
-    Conv2D(LayerParams),
+    Linear(LayerShape),
+    Conv2D(LayerShape),
     ReLU,
     LeakyReLU(f32),
     Sigmoid,
@@ -49,7 +49,7 @@ pub enum LayerType {
 
 impl LayerType {
     pub fn linear(in_features: usize, out_features: usize) -> Self {
-        LayerType::Linear(LayerParams {
+        LayerType::Linear(LayerShape {
             in_features,
             out_features,
             ..Default::default()
@@ -57,7 +57,7 @@ impl LayerType {
     }
 
     pub fn conv2d(in_channels: usize, out_channels: usize) -> Self {
-        LayerType::Conv2D(LayerParams {
+        LayerType::Conv2D(LayerShape {
             in_features: in_channels,
             out_features: out_channels,
             kernel_w: Some(3),
@@ -80,7 +80,7 @@ impl LayerType {
         padding_w: usize,
         padding_h: usize,
     ) -> Self {
-        LayerType::Conv2D(LayerParams {
+        LayerType::Conv2D(LayerShape {
             in_features: in_channels,
             out_features: out_channels,
             kernel_w: Some(kernel_w),
@@ -105,10 +105,10 @@ impl LayerType {
         matches!(self, LayerType::Linear(_) | LayerType::Conv2D(_))
     }
 
-    pub fn get_params(&self) -> LayerParams {
+    pub fn get_params(&self) -> LayerShape {
         match self {
             LayerType::Linear(params) | LayerType::Conv2D(params) => params.clone(),
-            _ => LayerParams::default(),
+            _ => LayerShape::default(),
         }
     }
 }

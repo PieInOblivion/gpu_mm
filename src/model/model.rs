@@ -1,4 +1,4 @@
-use super::{layer::LayerDesc, layer_params::LayerType, weight_init::WeightInit};
+use super::{layer::LayerDesc, layer_shape::LayerType, weight_init::WeightInit};
 
 #[derive(Clone)]
 pub struct ModelDesc {

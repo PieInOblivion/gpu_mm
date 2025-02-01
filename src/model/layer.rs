@@ -1,6 +1,6 @@
 use crate::dataloader::error::VKMLEngineError;
 
-use super::{layer_params::LayerType, tensor::TensorDesc};
+use super::{layer_shape::LayerType, tensor::TensorDesc};
 
 #[derive(Clone)]
 pub struct LayerDesc {
