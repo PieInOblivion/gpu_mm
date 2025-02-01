@@ -1,3 +1,3 @@
+/shaders/*.spv
 /target
-/benchmarks
 Cargo.lock
