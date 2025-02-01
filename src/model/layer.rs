@@ -1,6 +1,6 @@
 use crate::dataloader::error::VKMLEngineError;
 
-use super::tensor::TensorDesc;
+use super::{layer_params::LayerType, tensor::TensorDesc};
 
 #[derive(Clone)]
 pub struct LayerDesc {
@@ -10,37 +10,12 @@ pub struct LayerDesc {
     pub requires_parameters: bool,
 }
 
-#[derive(Clone)]
-pub enum LayerType {
-    Linear { in_features: usize, out_features: usize },
-    Conv2D {
-        in_channels: usize,
-        out_channels: usize,
-        spatial_dims: (usize, usize),  // (height, width)
-        kernel_size: (usize, usize),
-        stride: (usize, usize),
-        padding: (usize, usize),
-        dilation: (usize, usize)
-    },
-
-    // Basic activations
-    ReLU,
-    LeakyReLU { alpha: f32 },
-    Sigmoid,
-    Softmax { dim: usize },
-    Tanh,
-
-    // Modern activations
-    GELU,
-    SiLU,  // Swish    
-}
-
 impl LayerDesc {
     pub fn new(layer_type: LayerType) -> Self {
         match &layer_type {
-            LayerType::Linear { in_features, out_features } => {
-                let w = TensorDesc::new(vec![*out_features, *in_features]);
-                let b = TensorDesc::new(vec![*out_features]);
+            LayerType::Linear(params) => {
+                let w = TensorDesc::new(vec![params.out_features, params.in_features]);
+                let b = TensorDesc::new(vec![params.out_features]);
                 Self {
                     weights: w,
                     biases: b,
@@ -48,19 +23,14 @@ impl LayerDesc {
                     layer_type,
                 }
             },
-            LayerType::Conv2D { 
-                in_channels, 
-                out_channels, 
-                kernel_size,
-                ..
-            } => {
+            LayerType::Conv2D(params) => {
                 let w = TensorDesc::new(vec![
-                    *out_channels, 
-                    *in_channels, 
-                    kernel_size.0, 
-                    kernel_size.1
+                    params.out_features,
+                    params.in_features,
+                    params.kernel_h.unwrap_or(3),
+                    params.kernel_w.unwrap_or(3)
                 ]);
-                let b = TensorDesc::new(vec![*out_channels]);
+                let b = TensorDesc::new(vec![params.out_features]);
                 Self {
                     weights: w,
                     biases: b,
@@ -68,63 +38,47 @@ impl LayerDesc {
                     layer_type,
                 }
             },
-            LayerType::ReLU |
-            LayerType::LeakyReLU { .. } |
-            LayerType::Sigmoid |
-            LayerType::Softmax { .. } |
-            LayerType::Tanh |
-            LayerType::GELU |
-            LayerType::SiLU => {
-                Self {
-                    weights: TensorDesc::new(vec![]),
-                    biases: TensorDesc::new(vec![]),
-                    requires_parameters: false,
-                    layer_type,
-                }
+            _ => Self {
+                weights: TensorDesc::new(vec![]),
+                biases: TensorDesc::new(vec![]),
+                requires_parameters: false,
+                layer_type,
             },
         }
     }
 
     pub fn output_shape(&self, batch_size: usize, input_shape: Option<&[usize]>) -> Result<Vec<usize>, VKMLEngineError> {
         match &self.layer_type {
-            LayerType::Linear { out_features, .. } => {
-                Ok(vec![batch_size, *out_features])
+            LayerType::Linear(params) => {
+                Ok(vec![batch_size, params.out_features])
             },
-            LayerType::Conv2D { 
-                out_channels,
-                spatial_dims,
-                kernel_size,
-                stride,
-                padding,
-                dilation,
-                ..
-            } => {
-                let h_in = spatial_dims.0;
-                let w_in = spatial_dims.1;
+            LayerType::Conv2D(params) => {
+                let input_shape = input_shape.ok_or_else(|| 
+                    VKMLEngineError::VulkanLoadError("Conv2D requires input shape".into()))?;
+
+                let k_h = params.kernel_h.unwrap_or(3);
+                let k_w = params.kernel_w.unwrap_or(3);
+
+                let s_h = params.stride_h.unwrap_or(1);
+                let s_w = params.stride_w.unwrap_or(1);
+
+                let p_h = params.padding_h.unwrap_or(1);
+                let p_w = params.padding_w.unwrap_or(1);
                 
-                let h_out = ((h_in + 2 * padding.0 
-                    - dilation.0 * (kernel_size.0 - 1) - 1) / stride.0) + 1;
-                let w_out = ((w_in + 2 * padding.1 
-                    - dilation.1 * (kernel_size.1 - 1) - 1) / stride.1) + 1;
+                let h_in = input_shape[2];
+                let w_in = input_shape[3];
                 
-                Ok(vec![batch_size, *out_channels, h_out, w_out])
+                let h_out = ((h_in + 2 * p_h - k_h) / s_h) + 1;
+                let w_out = ((w_in + 2 * p_w - k_w) / s_w) + 1;
+                
+                Ok(vec![batch_size, params.out_features, h_out, w_out])
             },
             // Activation layers preserve input shape
-            LayerType::ReLU |
-            LayerType::LeakyReLU { .. } |
-            LayerType::Sigmoid |
-            LayerType::Tanh |
-            LayerType::GELU |
-            LayerType::SiLU => {
+            _ => {
                 input_shape.map(|shape| shape.to_vec())
                     .ok_or_else(|| VKMLEngineError::VulkanLoadError(
                         "Activation layer requires input shape".into()))
-            },
-            LayerType::Softmax { dim } => {
-                input_shape.map(|shape| shape.to_vec())
-                    .ok_or_else(|| VKMLEngineError::VulkanLoadError(
-                        format!("Softmax layer requires input shape (dim={})", dim)))
-            },
+            }
         }
     }
 

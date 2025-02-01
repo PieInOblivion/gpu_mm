@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    dataloader::error::VKMLEngineError, gpu::vk_gpu::{GPUMemory, GPU}, model::{layer::{LayerDesc, LayerType}, model::ModelDesc, tensor::TensorDesc}, thread_pool::{thread_pool::ThreadPool, worker::{DataPtrF32, WorkType}}};
+    dataloader::error::VKMLEngineError, gpu::vk_gpu::{GPUMemory, GPU}, model::{layer::LayerDesc, layer_params::LayerType, model::ModelDesc, tensor::TensorDesc}, thread_pool::thread_pool::ThreadPool};
 
 use super::cpu_compute::CPUCompute;
 
@@ -387,19 +387,14 @@ impl ComputeManager {
 
         for (i, layer) in self.layers.iter().enumerate() {
             let params = match &layer.desc.layer_type {
-                LayerType::Linear { in_features, out_features } => {
+                LayerType::Linear(params) => {
                     // weights: out_features * in_features, biases: out_features
-                    in_features * out_features + out_features
+                    params.in_features * params.out_features + params.out_features
                 },
-                LayerType::Conv2D { 
-                    in_channels, 
-                    out_channels, 
-                    kernel_size,
-                    ..
-                } => {
+                LayerType::Conv2D(params) => {
                     // weights: out_channels * in_channels * kernel_size.0 * kernel_size.1
                     // biases: out_channels
-                    out_channels * in_channels * kernel_size.0 * kernel_size.1 + out_channels
+                    params.out_features * params.in_features * params.kernel_h.unwrap() * params.kernel_w.unwrap() + params.out_features
                 },
                 LayerType::ReLU |
                 LayerType::LeakyReLU { .. } |
@@ -426,32 +421,34 @@ impl ComputeManager {
                 ComputeLocation::Parameterless => "N/A",
             };
 
-            let layer_type = match &layer.desc.layer_type {
-                LayerType::Linear { in_features, out_features } => 
-                    format!("Linear({}, {})", in_features, out_features),
-                LayerType::Conv2D { 
-                    in_channels, 
-                    out_channels, 
-                    kernel_size,
-                    stride,
-                    padding,
-                    ..
-                } => format!(
-                    "Conv2D({}, {}, {}×{}, s={:?}, p={:?})", 
-                    in_channels, out_channels, kernel_size.0, kernel_size.1,
-                    stride, padding
-                ),
+            let layer_desc = match &layer.desc.layer_type {
+                LayerType::Linear(params) => 
+                    format!("Linear({}, {})", params.in_features, params.out_features),
+                LayerType::Conv2D(params) => {
+                    let k_h = params.kernel_h.unwrap_or(3);
+                    let k_w = params.kernel_w.unwrap_or(3);
+                    let s_h = params.stride_h.unwrap_or(1);
+                    let s_w = params.stride_w.unwrap_or(1);
+                    let p_h = params.padding_h.unwrap_or(1);
+                    let p_w = params.padding_w.unwrap_or(1);
+                    format!(
+                        "Conv2D({}, {}, {}×{}, s={:?}, p={:?})", 
+                        params.in_features, params.out_features, 
+                        k_h, k_w,
+                        (s_h, s_w), (p_h, p_w)
+                    )
+                },
                 LayerType::ReLU => "ReLU".to_string(),
-                LayerType::LeakyReLU { alpha } => format!("LeakyReLU(α={})", alpha),
+                LayerType::LeakyReLU(alpha) => format!("LeakyReLU(α={})", alpha),
                 LayerType::Sigmoid => "Sigmoid".to_string(),
-                LayerType::Softmax { dim } => format!("Softmax(dim={})", dim),
+                LayerType::Softmax(dim) => format!("Softmax(dim={})", dim),
                 LayerType::Tanh => "Tanh".to_string(),
                 LayerType::GELU => "GELU".to_string(),
                 LayerType::SiLU => "SiLU".to_string(),
             };
 
             println!("{:<4} {:<20} {:<15} {:<15.2} {:<15} {:<15}", 
-                i, layer_type, params, memory_mb, output_shape, device_location);
+                i, layer_desc, params, memory_mb, output_shape, device_location);
 
             total_params += params;
             total_memory += memory_bytes;
@@ -488,25 +485,26 @@ impl ComputeManager {
         
         // Create detailed layer description
         let layer_desc = match &layer.desc.layer_type {
-            LayerType::Linear { in_features, out_features } => 
-                format!("Linear({}, {})", in_features, out_features),
-            LayerType::Conv2D { 
-                in_channels, 
-                out_channels, 
-                kernel_size,
-                stride,
-                padding,
-                dilation,
-                ..
-            } => format!(
-                "Conv2D({}, {}, {}×{}, s={:?}, p={:?}, d={:?})", 
-                in_channels, out_channels, kernel_size.0, kernel_size.1,
-                stride, padding, dilation
-            ),
+            LayerType::Linear(params) => 
+                format!("Linear({}, {})", params.in_features, params.out_features),
+            LayerType::Conv2D(params) => {
+                let k_h = params.kernel_h.unwrap_or(3);
+                let k_w = params.kernel_w.unwrap_or(3);
+                let s_h = params.stride_h.unwrap_or(1);
+                let s_w = params.stride_w.unwrap_or(1);
+                let p_h = params.padding_h.unwrap_or(1);
+                let p_w = params.padding_w.unwrap_or(1);
+                format!(
+                    "Conv2D({}, {}, {}×{}, s={:?}, p={:?})", 
+                    params.in_features, params.out_features, 
+                    k_h, k_w,
+                    (s_h, s_w), (p_h, p_w)
+                )
+            },
             LayerType::ReLU => "ReLU".to_string(),
-            LayerType::LeakyReLU { alpha } => format!("LeakyReLU(α={})", alpha),
+            LayerType::LeakyReLU(alpha) => format!("LeakyReLU(α={})", alpha),
             LayerType::Sigmoid => "Sigmoid".to_string(),
-            LayerType::Softmax { dim } => format!("Softmax(dim={})", dim),
+            LayerType::Softmax(dim) => format!("Softmax(dim={})", dim),
             LayerType::Tanh => "Tanh".to_string(),
             LayerType::GELU => "GELU".to_string(),
             LayerType::SiLU => "SiLU".to_string(),

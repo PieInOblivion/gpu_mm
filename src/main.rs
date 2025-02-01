@@ -4,7 +4,7 @@ use compute::compute_manager::ComputeManager;
 use dataloader::{config::DataLoaderConfig, data_batch::DataBatch, dataloader::{DataLoader, DatasetSplit}, for_imagesdir::DirectoryImageLoader, par_iter::MultithreadedDataLoaderIterator};
 use gpu::vk_gpu::GPU;
 
-use model::{layer::LayerType, model::ModelDesc, weight_init::WeightInit};
+use model::{layer_params::LayerType, model::ModelDesc, weight_init::WeightInit};
 use thread_pool::thread_pool::ThreadPool;
 
 mod thread_pool;
@@ -134,31 +134,19 @@ fn main() {
     //let mut m = ModelDesc::new(64);
     let mut m = ModelDesc::new_with(64, WeightInit::He);
 
-    m.add_layer(LayerType::Linear {
-        in_features: 785,
-        out_features: 512
-    });
+    m.add_layer(LayerType::linear(785, 512));
 
     m.add_layer(LayerType::ReLU);
 
-    m.add_layer(LayerType::Linear {
-        in_features: 512,
-        out_features: 256
-    });
+    m.add_layer(LayerType::linear(512, 256));
 
     m.add_layer(LayerType::ReLU);
 
     m.add_layers(vec![
-        LayerType::Linear {
-            in_features: 256,
-            out_features: 64
-        },
+        LayerType::linear(256, 64),
         LayerType::ReLU,
-        LayerType::Linear {
-            in_features: 64,
-            out_features: 1
-        }]
-    );
+        LayerType::linear(64, 1)
+    ]);
 
     let cm = ComputeManager::new(m, thread_pool.clone()).unwrap();
     
