@@ -134,6 +134,8 @@ fn main() {
     //let mut m = ModelDesc::new(64);
     let mut m = ModelDesc::new_with(64, WeightInit::He);
 
+    m.add_layer(LayerType::InputBuffer { features: 785, track_gradients: false });
+
     m.add_layer(LayerType::linear(785, 512));
 
     m.add_layer(LayerType::ReLU);
@@ -154,7 +156,7 @@ fn main() {
     
     cm.print_model_stats();
 
-    cm.print_layer_values(0);
+    cm.print_layer_values(2);
 /*
     {
         println!("Starting GPU memory tracking verification...\n");

@@ -2,6 +2,10 @@ use super::layer_shape::LayerShape;
 
 #[derive(Clone)]
 pub enum LayerType {
+    InputBuffer {
+        features: usize,
+        track_gradients: bool,
+    },
     Linear(LayerShape),
     Conv2D(LayerShape),
     ReLU,
@@ -69,6 +73,13 @@ impl LayerType {
 
     pub fn requires_parameters(&self) -> bool {
         matches!(self, LayerType::Linear(_) | LayerType::Conv2D(_))
+    }
+
+    pub fn requires_gradients(&self) -> bool {
+        match self {
+            LayerType::InputBuffer { track_gradients, .. } => *track_gradients,
+            _ => true,
+        }
     }
 
     pub fn get_params(&self) -> LayerShape {

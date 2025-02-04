@@ -6,6 +6,8 @@ use std::sync::Arc;
 use crate::thread_pool::thread_pool::ThreadPool;
 use crate::thread_pool::worker::{DataPtrF32, WorkType};
 
+use super::tensor_desc::TensorDesc;
+
 #[derive(Clone)]
 pub enum WeightInit {
     Xavier,              // Good for tanh activation
@@ -31,18 +33,9 @@ impl WeightInit {
         mean + std_dev * z
     }
 
-    pub fn init(&self, shape: &[usize], total_elements: usize) -> Vec<f32> {
+    pub fn init(&self, shape: &TensorDesc, total_elements: usize) -> Vec<f32> {
         // For Linear layers: shape is [out_features, in_features]
-        let (fan_in, fan_out) = if shape.len() == 2 {
-            (shape[1], shape[0])  // in_features, out_features
-        } else if shape.len() == 4 {
-            // For Conv2D: [out_channels, in_channels, kernel_h, kernel_w]
-            let kernel_size = shape[2] * shape[3];
-            (shape[1] * kernel_size, shape[0] * kernel_size)
-        } else {
-            // For 1D tensors (like biases) or other shapes
-            (1, shape[0])
-        };
+        let (fan_in, fan_out) = self.calculate_fan_in_out(shape);
         
         match self {
             WeightInit::Xavier => {
@@ -82,9 +75,9 @@ impl WeightInit {
         }
     }
 
-    pub fn par_init(&self, shape: &[usize], total_elements: usize, chunk_size: usize, thread_pool: Arc<ThreadPool>) -> Vec<f32> {
+    pub fn par_init(&self, shape: &TensorDesc, total_elements: usize, chunk_size: usize, thread_pool: Arc<ThreadPool>) -> Vec<f32> {
         let mut result = vec![0.0; total_elements];
-        let (fan_in, fan_out) = self.calculate_fan_in_out(&shape);
+        let (fan_in, fan_out) = self.calculate_fan_in_out(shape);
         let num_chunks = (total_elements + chunk_size - 1) / chunk_size;
         let data_ptr = DataPtrF32(result.as_mut_ptr());
         let mut work_items = Vec::with_capacity(num_chunks);
@@ -109,15 +102,23 @@ impl WeightInit {
         result
     }
 
-    pub fn calculate_fan_in_out(&self, shape: &[usize]) -> (usize, usize) {
-        match shape.len() {
-            2 => (shape[1], shape[0]),  // Linear: (in_features, out_features)
-            4 => {
-                // Conv2D: [out_channels, in_channels, kernel_h, kernel_w]
-                let kernel_size = shape[2] * shape[3];
-                (shape[1] * kernel_size, shape[0] * kernel_size)
+    pub fn calculate_fan_in_out(&self, shape: &TensorDesc) -> (usize, usize) {
+        match shape {
+            // For linear layers: shape is [out_features, in_features]
+            TensorDesc::Matrix { rows, cols } => {
+                (*cols, *rows)  // (in_features, out_features)
             },
-            _ => (1, shape[0]), // 1D tensors or other shapes
+
+            // For Conv2D: [out_channels, in_channels, kernel_h, kernel_w]
+            TensorDesc::Tensor4D { batch: out_channels, channels: in_channels, height, width } => {
+                let kernel_size = height * width;
+                (in_channels * kernel_size, out_channels * kernel_size)
+            },
+
+            // For 1D tensors (like biases) or other shapes, use simple defaults
+            TensorDesc::Vector { length } => {
+                (1, *length)
+            },
         }
     }
 }

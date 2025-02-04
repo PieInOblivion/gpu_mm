@@ -54,6 +54,9 @@ The project aims to provide abstractions at a level similar to PyTorch, includin
   * Sends and waits for single GPU commands
   * Future improvement: multiple simultaneous commands using threadpool or native Vulkan solution
 
+## Building
+* Requires [glslc](https://github.com/google/shaderc) in PATH to compile shaders
+
 ## References
 
 ### Vulkan Resources
