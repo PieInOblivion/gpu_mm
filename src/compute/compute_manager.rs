@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    dataloader::error::VKMLEngineError, gpu::vk_gpu::{GPUMemory, GPU}, model::{layer_desc::{self, LayerDesc}, layer_type::LayerType, model::ModelDesc, tensor_desc::TensorDesc}, thread_pool::thread_pool::ThreadPool};
+    dataloader::error::VKMLEngineError, gpu::{gpu_memory::GPUMemory, vk_gpu::GPU}, model::{layer_desc::LayerDesc, layer_type::LayerType, model::ModelDesc, tensor_desc::TensorDesc}, thread_pool::thread_pool::ThreadPool};
 
 use super::cpu_compute::CPUCompute;
 

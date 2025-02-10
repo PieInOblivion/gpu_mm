@@ -1,0 +1,13 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer InBuffer1 { float a[]; };
+layout(std430, binding = 1) buffer InBuffer2 { float b[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx < a.length()) {
+        a[idx] = b[idx] != 0.0 ? a[idx] / b[idx] : 0.0;
+    }
+}

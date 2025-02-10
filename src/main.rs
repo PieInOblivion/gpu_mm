@@ -121,6 +121,7 @@ fn main() {
         gpu.add(&gpu_mem1, &gpu_mem2).unwrap();
 
         println!("{:?}", gpu.read_memory(&gpu_mem1).unwrap());
+        println!("{:?}", gpu_mem2.read_memory().unwrap());
     }
 
     // Turns out NVIDIA vulkan can eat .spv that is still text

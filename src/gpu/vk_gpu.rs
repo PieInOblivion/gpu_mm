@@ -3,18 +3,13 @@ use std::{ffi::CString, ptr, sync::Arc};
 
 use crate::{compute::memory_tracker::MemoryTracker, dataloader::error::VKMLEngineError};
 
-use super::vk_gpu_info::GPUInfo;
+use super::{compute_pipelines::{ComputePipelines, GPUMemoryOperation}, gpu_memory::GPUMemory, vk_gpu_info::GPUInfo};
 
 // TODO: Performance gains when needing to multiple tasks in sequence
 // TODO: Generalise the usage a little bit more
 // NOTE: Get it working, then simplify
 
 // TODO: Look at VK_KHR_device_group. I Think we want to stick with individually managed GPUs though
-
-// Precompiled SPIR-V shader bytes
-const COMPUTE_SHADER_U8: &[u8] = include_bytes!("../shaders/math_ops_u8.spv");
-const COMPUTE_SHADER_U16: &[u8] = include_bytes!("../shaders/math_ops_u16.spv");
-const COMPUTE_SHADER_F32: &[u8] = include_bytes!("../shaders/math_ops_f32.spv");
 
 pub struct GPU {
     entry: Arc<Entry>,
@@ -24,25 +19,10 @@ pub struct GPU {
     compute_queue: vk::Queue,
     command_pool: vk::CommandPool,
     queue_family_index: u32,
-    pipeline_layout: vk::PipelineLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layout: vk::DescriptorSetLayout,
-    pipeline_f32: vk::Pipeline,
+    compute_pipelines: ComputePipelines,
     memory_tracker: MemoryTracker
-}
-
-#[repr(C)]
-struct PushConstants {
-    data_size: u32,
-    op_type: u32,
-}
-
-pub struct GPUMemory {
-    buffer: vk::Buffer,
-    memory: vk::DeviceMemory,
-    size: vk::DeviceSize,
-    device: Arc<Device>,
-    descriptor_set: vk::DescriptorSet,
 }
 
 impl GPU {
@@ -177,29 +157,8 @@ impl GPU {
 
             let descriptor_pool = device.create_descriptor_pool(&descriptor_pool_info, None)?;
 
-            // Create pipeline layout with push constants
-            let push_constant_range = vk::PushConstantRange {
-                stage_flags: vk::ShaderStageFlags::COMPUTE,
-                offset: 0,
-                size: std::mem::size_of::<PushConstants>() as u32,
-            };
-
-            let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
-                s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: vk::PipelineLayoutCreateFlags::empty(),
-                set_layout_count: 1,
-                p_set_layouts: &descriptor_set_layout,
-                push_constant_range_count: 1,
-                p_push_constant_ranges: &push_constant_range,
-                _marker: std::marker::PhantomData,
-            };
-
-            let pipeline_layout = device.create_pipeline_layout(&pipeline_layout_info, None)?;
-
-            //let pipeline_u8 = Self::create_pipeline(&device, pipeline_layout, COMPUTE_SHADER_U8)?;
-            //let pipeline_u16 = Self::create_pipeline(&device, pipeline_layout, COMPUTE_SHADER_U16)?;
-            let pipeline_f32 = Self::create_pipeline(&device, pipeline_layout, COMPUTE_SHADER_F32)?;
+            // Create compute pipelines
+            let compute_pipelines = ComputePipelines::new(&device, descriptor_set_layout)?;
 
             let memory_properties = instance.get_physical_device_memory_properties(physical_device);
             let total_memory = {
@@ -222,81 +181,11 @@ impl GPU {
                 compute_queue,
                 command_pool,
                 queue_family_index,
-                pipeline_layout,
                 descriptor_pool,
                 descriptor_set_layout,
-                pipeline_f32,
+                compute_pipelines,
                 memory_tracker: MemoryTracker::new(total_memory),
             })
-        }
-    }
-
-    fn create_pipeline(
-        device: &Device,
-        pipeline_layout: vk::PipelineLayout,
-        shader_code: &[u8],
-    ) -> Result<vk::Pipeline, Box<dyn std::error::Error>> {
-        unsafe {
-            // Ensure shader code is properly aligned for u32
-            let aligned_code: Vec<u32>;
-            if shader_code.as_ptr().align_offset(4) != 0 {
-                let mut padded = Vec::with_capacity((shader_code.len() + 3) / 4 * 4);
-                padded.extend_from_slice(shader_code);
-                while padded.len() % 4 != 0 {
-                    padded.push(0);
-                }
-                aligned_code = padded.chunks_exact(4)
-                    .map(|chunk| u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    .collect();
-            } else {
-                aligned_code = std::slice::from_raw_parts(
-                    shader_code.as_ptr() as *const u32,
-                    shader_code.len() / 4,
-                ).to_vec();
-            }
-
-            let shader_info = vk::ShaderModuleCreateInfo {
-                s_type: vk::StructureType::SHADER_MODULE_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: vk::ShaderModuleCreateFlags::empty(),
-                code_size: aligned_code.len() * 4,
-                p_code: aligned_code.as_ptr(),
-                _marker: std::marker::PhantomData,
-            };
-
-            let shader_module = device.create_shader_module(&shader_info, None)?;
-
-            let entry_point = CString::new("main")?;
-            let pipeline_info = vk::ComputePipelineCreateInfo {
-                s_type: vk::StructureType::COMPUTE_PIPELINE_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: vk::PipelineCreateFlags::empty(),
-                stage: vk::PipelineShaderStageCreateInfo {
-                    s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
-                    p_next: ptr::null(),
-                    flags: vk::PipelineShaderStageCreateFlags::empty(),
-                    stage: vk::ShaderStageFlags::COMPUTE,
-                    module: shader_module,
-                    p_name: entry_point.as_ptr(),
-                    p_specialization_info: ptr::null(),
-                    _marker: std::marker::PhantomData,
-                },
-                layout: pipeline_layout,
-                base_pipeline_handle: vk::Pipeline::null(),
-                base_pipeline_index: -1,
-                _marker: std::marker::PhantomData,
-            };
-
-            let pipeline = device.create_compute_pipelines(
-                vk::PipelineCache::null(),
-                &[pipeline_info],
-                None,
-            ).map_err(|e| format!("Failed to create compute pipeline: {:?}", e))?[0];
-
-            // Clean up shader module
-            device.destroy_shader_module(shader_module, None);
-
-            Ok(pipeline)
         }
     }
 
@@ -497,35 +386,11 @@ impl GPU {
         }
     }
 
-    fn get_active_pipeline(&self) -> vk::Pipeline {
-        self.pipeline_f32
-    }
-
-    pub fn copy_into(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
-        self.execute_operation(src1, src2, 0)
-    }
-
-    pub fn add(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
-        self.execute_operation(src1, src2, 1)
-    }
-
-    pub fn sub(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
-        self.execute_operation(src1, src2, 2)
-    }
-
-    pub fn mul(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
-        self.execute_operation(src1, src2, 3)
-    }
-
-    pub fn div(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
-        self.execute_operation(src1, src2, 4)
-    }
-
     fn execute_operation(
         &self,
         src1: &GPUMemory,
         src2: &GPUMemory,
-        op_type: u32,
+        operation: GPUMemoryOperation,
     ) -> Result<(), Box<dyn std::error::Error>> {
         unsafe {
             // Create command buffer
@@ -537,9 +402,9 @@ impl GPU {
                 command_buffer_count: 1,
                 _marker: std::marker::PhantomData,
             };
-
+    
             let command_buffer = self.device.allocate_command_buffers(&alloc_info)?[0];
-
+    
             // Begin command buffer
             let begin_info = vk::CommandBufferBeginInfo {
                 s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
@@ -548,67 +413,53 @@ impl GPU {
                 p_inheritance_info: ptr::null(),
                 _marker: std::marker::PhantomData,
             };
-
+    
             self.device.begin_command_buffer(command_buffer, &begin_info)?;
-
-            // Update descriptor set for src2
+    
+            // Update descriptor set for src2 buffer
             let buffer_info = vk::DescriptorBufferInfo {
                 buffer: src2.buffer,
                 offset: 0,
                 range: src2.size,
             };
-
+    
             let write_descriptor_set = vk::WriteDescriptorSet {
                 s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
                 p_next: ptr::null(),
                 dst_set: src1.descriptor_set,
-                dst_binding: 1,
+                dst_binding: 1,  // Use binding 1 for second buffer
                 dst_array_element: 0,
                 descriptor_count: 1,
                 descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                p_image_info: ptr::null(),
                 p_buffer_info: &buffer_info,
+                p_image_info: ptr::null(),
                 p_texel_buffer_view: ptr::null(),
                 _marker: std::marker::PhantomData,
             };
-
+    
             self.device.update_descriptor_sets(&[write_descriptor_set], &[]);
-
-            // Bind pipeline and descriptor set
-            let pipeline = self.get_active_pipeline();
+    
+            // Get and bind the specific pipeline for this operation
+            let pipeline = self.compute_pipelines.get_pipeline(operation)
+                .ok_or("Invalid operation")?;
+    
             self.device.cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
                 pipeline,
             );
-
+    
+            // Bind the descriptor set from src1 (which now has both buffers)
             self.device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
-                self.pipeline_layout,
+                self.compute_pipelines.get_layout(),
                 0,
                 &[src1.descriptor_set],
                 &[],
             );
-
-            // Push constants
-            let push_constants = PushConstants {
-                data_size: src1.size as u32,
-                op_type,
-            };
-
-            self.device.cmd_push_constants(
-                command_buffer,
-                self.pipeline_layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                std::slice::from_raw_parts(
-                    &push_constants as *const _ as *const u8,
-                    std::mem::size_of::<PushConstants>(),
-                ),
-            );
-
-            // Dispatch compute shader
+    
+            // Calculate workgroup dispatch size
             let workgroup_size = 256;
             let num_workgroups = (src1.size + workgroup_size as u64 - 1) / workgroup_size as u64;
             
@@ -618,10 +469,10 @@ impl GPU {
                 1,
                 1,
             );
-
+    
             // End and submit command buffer
             self.device.end_command_buffer(command_buffer)?;
-
+    
             let submit_info = vk::SubmitInfo {
                 s_type: vk::StructureType::SUBMIT_INFO,
                 p_next: ptr::null(),
@@ -634,18 +485,18 @@ impl GPU {
                 p_signal_semaphores: ptr::null(),
                 _marker: std::marker::PhantomData,
             };
-
+    
             self.device.queue_submit(
                 self.compute_queue,
                 &[submit_info],
                 vk::Fence::null(),
             )?;
-
+    
             self.device.queue_wait_idle(self.compute_queue)?;
-
+    
             // Cleanup
             self.device.free_command_buffers(self.command_pool, &[command_buffer]);
-
+    
             Ok(())
         }
     }
@@ -744,6 +595,22 @@ impl GPU {
         }
     }
 
+    pub fn add(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+        self.execute_operation(src1, src2, GPUMemoryOperation::Add)
+    }
+
+    pub fn sub(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+        self.execute_operation(src1, src2, GPUMemoryOperation::Subtract)
+    }
+
+    pub fn mul(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+        self.execute_operation(src1, src2, GPUMemoryOperation::Multiply)
+    }
+
+    pub fn div(&self, src1: &GPUMemory, src2: &GPUMemory) -> Result<(), Box<dyn std::error::Error>> {
+        self.execute_operation(src1, src2, GPUMemoryOperation::Divide)
+    }
+
     pub fn allocate_memory(&self, size: u64) -> Result<(), VKMLEngineError> {
         self.memory_tracker.allocate(size)
     }
@@ -769,8 +636,7 @@ impl Drop for GPUMemory {
 impl Drop for GPU {
     fn drop(&mut self) {
         unsafe {
-            self.device.destroy_pipeline(self.pipeline_f32, None);
-            self.device.destroy_pipeline_layout(self.pipeline_layout, None);
+            self.compute_pipelines.cleanup(&self.device);
             self.device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             self.device.destroy_descriptor_pool(self.descriptor_pool, None);
             self.device.destroy_command_pool(self.command_pool, None);
