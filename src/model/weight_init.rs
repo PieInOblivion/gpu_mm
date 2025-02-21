@@ -1,5 +1,4 @@
-use rand::distributions::{Distribution, Uniform};
-use rand::thread_rng;
+use rand::distr::{Distribution, Uniform};
 use std::f32::consts::PI;
 use std::sync::Arc;
 
@@ -23,11 +22,11 @@ pub enum WeightInit {
 impl WeightInit {
     // Box-Muller transform to generate normal distribution
     pub fn normal_sample(mean: f32, std_dev: f32) -> f32 {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let uniform = Uniform::new(0.0f32, 1.0);
         
-        let u1 = uniform.sample(&mut rng);
-        let u2 = uniform.sample(&mut rng);
+        let u1 = uniform.unwrap().sample(&mut rng);
+        let u2 = uniform.unwrap().sample(&mut rng);
         
         let z = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
         mean + std_dev * z
@@ -41,9 +40,9 @@ impl WeightInit {
             WeightInit::Xavier => {
                 let limit = (6.0 / (fan_in + fan_out) as f32).sqrt();
                 let dist = Uniform::new(-limit, limit);
-                let mut rng = thread_rng();
+                let mut rng = rand::rng();
                 (0..total_elements)
-                    .map(|_| dist.sample(&mut rng))
+                    .map(|_| dist.unwrap().sample(&mut rng))
                     .collect()
             },
             
@@ -63,9 +62,9 @@ impl WeightInit {
             
             WeightInit::UniformRandom { min, max } => {
                 let dist = Uniform::new(*min, *max);
-                let mut rng = thread_rng();
+                let mut rng = rand::rng();
                 (0..total_elements)
-                    .map(|_| dist.sample(&mut rng))
+                    .map(|_| dist.unwrap().sample(&mut rng))
                     .collect()
             },
             

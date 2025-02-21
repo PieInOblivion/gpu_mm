@@ -106,7 +106,7 @@ impl DirectoryImageLoader {
 
         self.config.rng = if self.config.shuffle {
             if self.config.shuffle_seed.is_none() {
-                self.config.shuffle_seed = Some(rand::thread_rng().gen());
+                self.config.shuffle_seed = Some(rand::rng().random());
             }
             Some(Arc::new(Mutex::new(StdRng::seed_from_u64(self.config.shuffle_seed.unwrap()))))
         } else {

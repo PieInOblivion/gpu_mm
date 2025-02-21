@@ -214,7 +214,7 @@ impl GPU {
             _marker: std::marker::PhantomData,
         };
 
-        Ok(entry.create_instance(&create_info, None)?)
+        Ok(unsafe { entry.create_instance(&create_info, None) }?)
     }
 
     pub fn total_memory(&self) -> u64 {

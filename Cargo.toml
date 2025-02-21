@@ -1,14 +1,14 @@
 [package]
 name = "gpu_mm"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [profile.release]
 lto = true
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
-rand = "0.8"
+rand = "0.9"
 thiserror = "2"
 ash = "0.38"
 sys-info = "0.9"

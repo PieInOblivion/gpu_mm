@@ -1,5 +1,5 @@
 use ash::{vk, Device};
-use std::{collections::HashMap, ops::DerefMut};
+use std::collections::HashMap;
 
 // Precompiled SPIR-V shader bytes
 const F32_ADD_ARRAY_SHADER: &[u8] = include_bytes!("../shaders/f32_add_array.spv");

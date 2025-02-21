@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::thread_pool::worker::{WorkType, WorkFuture, WorkResult};
+use crate::thread_pool::worker::WorkFuture;
 
 use super::{data_batch::DataBatch, dataloader::{DataLoader, DatasetSplit}};
 

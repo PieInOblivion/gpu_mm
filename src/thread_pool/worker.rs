@@ -7,7 +7,7 @@ use std::thread;
 use crate::dataloader::data_batch::DataBatch;
 use crate::model::weight_init::WeightInit;
 use image::ColorType;
-use rand::distributions::Uniform;
+use rand::distr::Uniform;
 use rand::prelude::Distribution;
 
 use super::thread_pool::ThreadPool;
@@ -284,7 +284,7 @@ impl Worker {
         fan_in: usize,
         fan_out: usize,
     ) -> WorkResult {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         
         // SAFETY: Each task works on a unique slice range, so no overlapping writes
         unsafe {
@@ -293,7 +293,7 @@ impl Worker {
                     let limit = (6.0 / (fan_in + fan_out) as f32).sqrt();
                     let dist = Uniform::new(-limit, limit);
                     for i in start_idx..end_idx {
-                        *data_ptr.0.add(i) = dist.sample(&mut rng);
+                        *data_ptr.0.add(i) = dist.unwrap().sample(&mut rng);
                     }
                 },
                 WeightInit::He => {
@@ -311,7 +311,7 @@ impl Worker {
                 WeightInit::UniformRandom { min, max } => {
                     let dist = Uniform::new(min, max);
                     for i in start_idx..end_idx {
-                        *data_ptr.0.add(i) = dist.sample(&mut rng);
+                        *data_ptr.0.add(i) = dist.unwrap().sample(&mut rng);
                     }
                 },
                 WeightInit::Constant(value) => {
