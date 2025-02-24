@@ -8,6 +8,7 @@ pub enum LayerType {
     },
     Linear(LayerShape),
     Conv2D(LayerShape),
+    Flatten,
     ReLU,
     LeakyReLU(f32),
     Sigmoid,

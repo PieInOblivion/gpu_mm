@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    dataloader::error::VKMLEngineError, gpu::{gpu_memory::GPUMemory, vk_gpu::GPU}, model::{layer_desc::LayerDesc, layer_type::LayerType, model::ModelDesc, tensor_desc::TensorDesc}, thread_pool::thread_pool::ThreadPool};
+    dataloader::error::VKMLEngineError, gpu::{gpu_memory::GPUMemory, vk_gpu::GPU}, model::{graph_model::GraphModel, layer_desc::LayerDesc, layer_type::LayerType, tensor_desc::TensorDesc, weight_init::WeightInit}, thread_pool::thread_pool::ThreadPool};
 
 use super::cpu_compute::CPUCompute;
 
@@ -35,25 +35,30 @@ pub struct ComputeLayer {
 }
 
 pub struct ComputeManager {
-    model_desc: ModelDesc,
-    gpus: Vec<GPU>,
+    pub gpus: Vec<GPU>,
     upto_gpu: usize,
-    cpu: CPUCompute,
+    pub cpu: CPUCompute,
     thread_pool: Arc<ThreadPool>,
 
-    pub layers: Vec<ComputeLayer>,
+    pub model: GraphModel,
 }
 
 impl ComputeManager {
-    pub fn new(desc: ModelDesc, thread_pool: Arc<ThreadPool>) -> Result<Self, VKMLEngineError> {
+    pub fn new(model: GraphModel, thread_pool: Arc<ThreadPool>) -> Result<Self, VKMLEngineError> {
         let gpus = Self::available_gpus()?;
-        Self::new_with(desc, thread_pool, gpus, None)
+        Self::new_with(model, thread_pool, gpus, None)
     }
 
-    pub fn new_with(desc: ModelDesc, thread_pool: Arc<ThreadPool>, gpus: Vec<GPU>, cpu_memory_limit_bytes: Option<u64>) -> Result<Self, VKMLEngineError> {
+    pub fn new_with(model: GraphModel, thread_pool: Arc<ThreadPool>, gpus: Vec<GPU>, cpu_memory_limit_bytes: Option<u64>) -> Result<Self, VKMLEngineError> {
+        if model.verified.is_none() {
+            return Err(VKMLEngineError::VulkanLoadError(
+                format!("GraphModel has not been verified. Use .verify()")
+            ));
+        }
+
         let cpu = CPUCompute::new(cpu_memory_limit_bytes, thread_pool.clone());
 
-        let total_memory = desc.total_memory_requirements();
+        let total_memory = model.total_memory_requirements();
         let total_available: u64 = gpus.iter()
             .map(|gpu| gpu.available_memory())
             .sum::<u64>()
@@ -69,12 +74,11 @@ impl ComputeManager {
         }
         
         let mut manager = Self {
-            model_desc: desc.clone(),
             gpus,
             upto_gpu: 0,
             cpu,
             thread_pool,
-            layers: Vec::with_capacity(desc.layers.len()),
+            model,
         };
 
         // Allocate layers sequentially
@@ -122,13 +126,25 @@ impl ComputeManager {
         }
     }
 
-    fn allocate_layer(&mut self, mut layer_desc: LayerDesc, target_device: &DeviceLocation) -> Result<ComputeLayer, VKMLEngineError> {
-        // Get input shape from previous layer if it exists
-        let input_shape = self.layers.last()
-        .map(|layer| &layer.activations.desc);
-        
+    fn allocate_layer(
+        &mut self,
+        mut layer_desc: LayerDesc,
+        input_shapes: Vec<&TensorDesc>,
+        weight_init: &WeightInit,
+        target_device: &DeviceLocation
+    ) -> Result<ComputeLayer, VKMLEngineError> {
         // Calculate output shape using model's batch size, create tensor descriptor for activations
-        let activation_desc = layer_desc.output_shape(self.model_desc.batch_size, input_shape)?;
+        let activation_desc = if input_shapes.is_empty() {
+            // This is an input layer
+            layer_desc.output_shape(self.model.batch_size, None)?
+        } else if input_shapes.len() == 1 {
+            // Standard single-input layer
+            layer_desc.output_shape(self.model.batch_size, Some(input_shapes[0]))?
+        } else {
+            // Multi-input layer - needs custom handling based on layer type
+            // For now, just use the first input as a simplification
+            layer_desc.output_shape(self.model.batch_size, Some(input_shapes[0]))?
+        };
 
         // Update activation gradients parameter to match the activation size for non-parameter layers
         if !layer_desc.requires_parameters && layer_desc.layer_type.requires_gradients() {
@@ -137,10 +153,10 @@ impl ComputeManager {
         
         let (weights, biases, weight_gradients, bias_gradients) = if layer_desc.requires_parameters {
             (
-                self.allocate_tensor(&layer_desc.weights, target_device)?,
-                self.allocate_tensor(&layer_desc.biases, target_device)?,
-                self.allocate_tensor(&layer_desc.weight_gradients, target_device)?,
-                self.allocate_tensor(&layer_desc.bias_gradients, target_device)?
+                self.allocate_tensor(&layer_desc.weights, target_device, weight_init)?,
+                self.allocate_tensor(&layer_desc.biases, target_device, weight_init)?,
+                self.allocate_tensor(&layer_desc.weight_gradients, target_device, &WeightInit::Constant(0.0))?,
+                self.allocate_tensor(&layer_desc.bias_gradients, target_device, &WeightInit::Constant(0.0))?
             )
         } else {
             (
@@ -164,11 +180,11 @@ impl ComputeManager {
         };
 
         // Allocate the activation tensor on target device
-        let activations = self.allocate_tensor(&activation_desc, target_device)?;
+        let activations = self.allocate_tensor(&activation_desc, target_device, &WeightInit::Constant(0.0))?;
 
         // Only allocate activation gradients if the layer needs them
         let activation_gradients = if let Some(grad_desc) = &layer_desc.activation_gradients {
-            Some(self.allocate_tensor(grad_desc, target_device)?)
+            Some(self.allocate_tensor(grad_desc, target_device, &WeightInit::Constant(0.0))?)
         } else {
             None
         };
@@ -184,22 +200,23 @@ impl ComputeManager {
         })
     }
 
-    fn allocate_tensor(&mut self, desc: &TensorDesc, target_device: &DeviceLocation) 
+    fn allocate_tensor(&mut self, desc: &TensorDesc, target_device: &DeviceLocation, weight_init: &WeightInit) 
         -> Result<ComputeTensor, VKMLEngineError> {
         // Allocate memory on target device
         let size_in_bytes = desc.size_in_bytes() as u64;
 
         // NOTE: There is probably a better place to put this
         // The most optimal value depends on each machine. This will serve as a general value for now
+        // Constant type weight_init probably never needs to be multi-threaded?
         let parallel_threshold = 10000;
 
         let total_elements = desc.num_elements();
         
         let initial_data = {
             if total_elements < parallel_threshold {
-                self.model_desc.weight_init.init(desc, total_elements)
+                weight_init.init(desc, total_elements)
             } else {
-                self.model_desc.weight_init.par_init(desc, total_elements, parallel_threshold, self.thread_pool.clone())
+                weight_init.par_init(desc, total_elements, parallel_threshold, self.thread_pool.clone())
             }
         };
 
@@ -397,319 +414,6 @@ impl ComputeManager {
         
         Ok(())
     }
-
-    pub fn print_model_stats(&self) {
-        let mut total_params = 0usize;
-        let mut total_memory = 0u64;
-        
-        println!("\nModel Statistics");
-        println!("================");
-        println!("\nBatch Size: {}", self.model_desc.batch_size);
-        println!("\nLayer Details:");
-        println!("{:-<90}", "");
-        println!("{:<4} {:<20} {:<15} {:<15} {:<15} {:<15}", 
-            "No.", "Type", "Parameters", "Memory (MB)", "Output Shape", "Device");
-        println!("{:-<90}", "");
-
-        for (i, layer) in self.layers.iter().enumerate() {
-            let params = match &layer.desc.layer_type {
-                LayerType::InputBuffer { features, .. } => *features,
-                LayerType::Linear(params) => {
-                    // weights: out_features * in_features, biases: out_features
-                    params.in_features * params.out_features + params.out_features
-                },
-                LayerType::Conv2D(params) => {
-                    // weights: out_channels * in_channels * kernel_size.0 * kernel_size.1
-                    // biases: out_channels
-                    params.out_features * params.in_features * params.kernel_h.unwrap() * params.kernel_w.unwrap() + params.out_features
-                },
-                LayerType::ReLU |
-                LayerType::LeakyReLU { .. } |
-                LayerType::Sigmoid |
-                LayerType::Softmax { .. } |
-                LayerType::Tanh |
-                LayerType::GELU |
-                LayerType::SiLU => 0,
-            };
-
-            let memory_bytes = layer.desc.memory_requirements();
-            let memory_mb = memory_bytes as f64 / (1024.0 * 1024.0);
-            
-            // Get output shape from activations tensor
-            let output_shape = layer.activations.desc.to_dims()
-                .iter()
-                .map(|&d| d.to_string())
-                .collect::<Vec<_>>()
-                .join("×");
-
-            let device_location = match &layer.activations.location {
-                ComputeLocation::CPU(_) => "CPU",
-                ComputeLocation::GPU { gpu_idx, .. } => &format!("GPU {}", gpu_idx),
-                ComputeLocation::Parameterless => "N/A",
-            };
-
-            let layer_desc = match &layer.desc.layer_type {
-                LayerType::InputBuffer { features, track_gradients } => {
-                    if *track_gradients {
-                        format!("InputBuffer({}, with gradients)", features)
-                    } else {
-                        format!("InputBuffer({})", features)
-                    }
-                },
-                LayerType::Linear(params) => 
-                    format!("Linear({}, {})", params.in_features, params.out_features),
-                LayerType::Conv2D(params) => {
-                    let k_h = params.kernel_h.unwrap_or(3);
-                    let k_w = params.kernel_w.unwrap_or(3);
-                    let s_h = params.stride_h.unwrap_or(1);
-                    let s_w = params.stride_w.unwrap_or(1);
-                    let p_h = params.padding_h.unwrap_or(1);
-                    let p_w = params.padding_w.unwrap_or(1);
-                    format!(
-                        "Conv2D({}, {}, {}×{}, s={:?}, p={:?})", 
-                        params.in_features, params.out_features, 
-                        k_h, k_w,
-                        (s_h, s_w), (p_h, p_w)
-                    )
-                },
-                LayerType::ReLU => "ReLU".to_string(),
-                LayerType::LeakyReLU(alpha) => format!("LeakyReLU(α={})", alpha),
-                LayerType::Sigmoid => "Sigmoid".to_string(),
-                LayerType::Softmax(dim) => format!("Softmax(dim={})", dim),
-                LayerType::Tanh => "Tanh".to_string(),
-                LayerType::GELU => "GELU".to_string(),
-                LayerType::SiLU => "SiLU".to_string(),
-            };
-
-            println!("{:<4} {:<20} {:<15} {:<15.2} {:<15} {:<15}", 
-                i, layer_desc, params, memory_mb, output_shape, device_location);
-
-            total_params += params;
-            total_memory += memory_bytes;
-        }
-
-        println!("{:-<90}", "");
-        println!("\nModel Summary:");
-        println!("Total Parameters: {}", total_params);
-        println!("Total Memory: {:.2} MB", total_memory as f64 / (1024.0 * 1024.0));
-        
-        // Memory allocation status
-        println!("\nMemory Allocation:");
-        println!("CPU Memory Used: {:.2} MB", 
-            self.cpu.memory_tracking.get_current() as f64 / (1024.0 * 1024.0));
-        println!("CPU Memory Available: {:.2} MB", 
-            self.cpu.memory_tracking.get_available() as f64 / (1024.0 * 1024.0));
-        
-        for (i, gpu) in self.gpus.iter().enumerate() {
-            println!("GPU {} Memory Used: {:.2} MB", 
-                i, (gpu.total_memory() - gpu.available_memory()) as f64 / (1024.0 * 1024.0));
-            println!("GPU {} Memory Available: {:.2} MB", 
-                i, gpu.available_memory() as f64 / (1024.0 * 1024.0));
-        }
-    }
-
-    pub fn print_layer_values(&self, layer_idx: usize) -> Result<(), VKMLEngineError> {
-    if layer_idx >= self.layers.len() {
-        return Err(VKMLEngineError::VulkanLoadError(
-            format!("Layer index {} out of bounds (max {})", layer_idx, self.layers.len() - 1)
-        ));
-    }
-
-    let layer = &self.layers[layer_idx];
-    
-    // Create detailed layer description
-    let layer_desc = match &layer.desc.layer_type {
-        LayerType::InputBuffer { features, track_gradients } => {
-            if *track_gradients {
-                format!("InputBuffer({}, with gradients)", features)
-            } else {
-                format!("InputBuffer({})", features)
-            }
-        },
-        LayerType::Linear(params) => 
-            format!("Linear({}, {})", params.in_features, params.out_features),
-        LayerType::Conv2D(params) => {
-            let k_h = params.kernel_h.unwrap_or(3);
-            let k_w = params.kernel_w.unwrap_or(3);
-            let s_h = params.stride_h.unwrap_or(1);
-            let s_w = params.stride_w.unwrap_or(1);
-            let p_h = params.padding_h.unwrap_or(1);
-            let p_w = params.padding_w.unwrap_or(1);
-            format!(
-                "Conv2D({}, {}, {}×{}, s={:?}, p={:?})", 
-                params.in_features, params.out_features, 
-                k_h, k_w,
-                (s_h, s_w), (p_h, p_w)
-            )
-        },
-        LayerType::ReLU => "ReLU".to_string(),
-        LayerType::LeakyReLU(alpha) => format!("LeakyReLU(α={})", alpha),
-        LayerType::Sigmoid => "Sigmoid".to_string(),
-        LayerType::Softmax(dim) => format!("Softmax(dim={})", dim),
-        LayerType::Tanh => "Tanh".to_string(),
-        LayerType::GELU => "GELU".to_string(),
-        LayerType::SiLU => "SiLU".to_string(),
-    };
-
-    println!("\nLayer {} Values ({})", layer_idx, layer_desc);
-    println!("{:-<120}", "");
-
-    // Helper closure to format arrays nicely
-    let format_array = |arr: &[f32], max_items: usize| {
-        let mut s = String::from("[");
-        for (i, val) in arr.iter().take(max_items).enumerate() {
-            if i > 0 { s.push_str(", "); }
-            s.push_str(&format!("{:.6}", val));
-        }
-        if arr.len() > max_items {
-            s.push_str(", ...")
-        }
-        s.push(']');
-        s
-    };
-
-    // Helper function to print tensor statistics
-    let print_tensor_stats = |data: &[f32]| {
-        if !data.is_empty() {
-            let min_val = data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-            let max_val = data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-            let mean = data.iter().sum::<f32>() / data.len() as f32;
-            let variance = data.iter()
-                .map(|&x| (x - mean).powi(2))
-                .sum::<f32>() / data.len() as f32;
-            let std_dev = variance.sqrt();
-            
-            println!("  Stats:");
-            println!("    Min: {:.6}", min_val);
-            println!("    Max: {:.6}", max_val);
-            println!("    Mean: {:.6}", mean);
-            println!("    Std Dev: {:.6}", std_dev);
-            
-            // Count non-zero elements
-            let non_zero = data.iter().filter(|&&x| x != 0.0).count();
-            println!("    Non-zero elements: {} ({:.2}%)", 
-                non_zero, 
-                (non_zero as f32 / data.len() as f32) * 100.0
-            );
-        }
-    };
-
-    // Helper function to print tensor information
-    let print_tensor_info = |name: &str, tensor: &ComputeTensor, gpu_idx: Option<usize>, 
-                            data: &[f32], shape: &[usize]| {
-        println!("\n{}:", name);
-        println!("  Location: {}", match gpu_idx {
-            Some(idx) => format!("GPU {}", idx),
-            None => "CPU".to_string(),
-        });
-        println!("  Shape: {:?}", shape);
-        println!("  Size in memory: {:.2} MB", 
-            (data.len() * std::mem::size_of::<f32>()) as f32 / (1024.0 * 1024.0));
-        println!("  Values: {}", format_array(data, 10));
-        
-        print_tensor_stats(data);
-    };
-
-    // Print forward pass tensors
-    if layer.desc.requires_parameters {
-        match &layer.weights.location {
-            ComputeLocation::CPU(data) => {
-                print_tensor_info("Weights", &layer.weights, None, data, &layer.weights.desc.to_dims());
-            },
-            ComputeLocation::GPU { gpu_idx, memory } => {
-                let data = self.gpus[*gpu_idx].read_memory(memory)
-                    .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
-                print_tensor_info("Weights", &layer.weights, Some(*gpu_idx), &data, &layer.weights.desc.to_dims());
-            },
-            ComputeLocation::Parameterless => {
-                println!("\nWeights: No weights (parameterless layer)");
-            },
-        }
-
-        match &layer.biases.location {
-            ComputeLocation::CPU(data) => {
-                print_tensor_info("Biases", &layer.biases, None, data, &layer.biases.desc.to_dims());
-            },
-            ComputeLocation::GPU { gpu_idx, memory } => {
-                let data = self.gpus[*gpu_idx].read_memory(memory)
-                    .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
-                print_tensor_info("Biases", &layer.biases, Some(*gpu_idx), &data, &layer.biases.desc.to_dims());
-            },
-            ComputeLocation::Parameterless => {
-                println!("\nBiases: No biases (parameterless layer)");
-            },
-        }
-    } else {
-        println!("\nParameters: None (activation layer)");
-    }
-
-    // Print activations
-    match &layer.activations.location {
-        ComputeLocation::CPU(data) => {
-            print_tensor_info("Activations", &layer.activations, None, data, &layer.activations.desc.to_dims());
-        },
-        ComputeLocation::GPU { gpu_idx, memory } => {
-            let data = self.gpus[*gpu_idx].read_memory(memory)
-                .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
-            print_tensor_info("Activations", &layer.activations, Some(*gpu_idx), &data, &layer.activations.desc.to_dims());
-        },
-        ComputeLocation::Parameterless => {
-            println!("\nActivations: No activations (parameterless layer)");
-        },
-    }
-
-    // Print gradient tensors
-    println!("\nGradients:");
-    if layer.desc.requires_parameters {
-        match &layer.weight_gradients.location {
-            ComputeLocation::CPU(data) => {
-                print_tensor_info("Weight Gradients", &layer.weight_gradients, None, data, &layer.weight_gradients.desc.to_dims());
-            },
-            ComputeLocation::GPU { gpu_idx, memory } => {
-                let data = self.gpus[*gpu_idx].read_memory(memory)
-                    .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
-                print_tensor_info("Weight Gradients", &layer.weight_gradients, Some(*gpu_idx), &data, &layer.weight_gradients.desc.to_dims());
-            },
-            ComputeLocation::Parameterless => {
-                println!("  Weight Gradients: None (parameterless layer)");
-            },
-        }
-
-        match &layer.bias_gradients.location {
-            ComputeLocation::CPU(data) => {
-                print_tensor_info("Bias Gradients", &layer.bias_gradients, None, data, &layer.bias_gradients.desc.to_dims());
-            },
-            ComputeLocation::GPU { gpu_idx, memory } => {
-                let data = self.gpus[*gpu_idx].read_memory(memory)
-                    .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
-                print_tensor_info("Bias Gradients", &layer.bias_gradients, Some(*gpu_idx), &data, &layer.bias_gradients.desc.to_dims());
-            },
-            ComputeLocation::Parameterless => {
-                println!("  Bias Gradients: None (parameterless layer)");
-            },
-        }
-    }
-
-    if let Some(activation_gradients) = &layer.activation_gradients {
-        match &activation_gradients.location {
-            ComputeLocation::CPU(data) => {
-                print_tensor_info("Activation Gradients", activation_gradients, None, data, &activation_gradients.desc.to_dims());
-            },
-            ComputeLocation::GPU { gpu_idx, memory } => {
-                let data = self.gpus[*gpu_idx].read_memory(memory)
-                    .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
-                print_tensor_info("Activation Gradients", activation_gradients, Some(*gpu_idx), &data, &activation_gradients.desc.to_dims());
-            },
-            ComputeLocation::Parameterless => {
-                println!("  Activation Gradients: None (parameterless layer)");
-            },
-        }
-    } else {
-        println!("  Activation Gradients: Disabled for this layer");
-    }
-
-    Ok(())
-}
 }
 
 impl Drop for ComputeManager {

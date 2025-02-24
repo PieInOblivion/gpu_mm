@@ -33,7 +33,7 @@ impl ComputePipelines {
                 flags: vk::PipelineLayoutCreateFlags::empty(),
                 set_layout_count: 1,
                 p_set_layouts: &descriptor_set_layout,
-                push_constant_range_count: 0, // No more push constants needed
+                push_constant_range_count: 0,
                 p_push_constant_ranges: std::ptr::null(),
                 _marker: std::marker::PhantomData,
             };
