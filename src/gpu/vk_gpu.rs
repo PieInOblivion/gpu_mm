@@ -108,7 +108,6 @@ impl GPU {
 
             let command_pool = device.create_command_pool(&command_pool_info, None)?;
 
-            // Create descriptor set layout
             let bindings = [
                 vk::DescriptorSetLayoutBinding {
                     binding: 0,
@@ -139,10 +138,9 @@ impl GPU {
 
             let descriptor_set_layout = device.create_descriptor_set_layout(&descriptor_layout_info, None)?;
 
-            // Create descriptor pool
             let pool_sizes = [vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 100, // Support up to 50 GPUMemory objects
+                descriptor_count: 100,
             }];
 
             let descriptor_pool_info = vk::DescriptorPoolCreateInfo {
@@ -157,7 +155,6 @@ impl GPU {
 
             let descriptor_pool = device.create_descriptor_pool(&descriptor_pool_info, None)?;
 
-            // Create compute pipelines
             let compute_pipelines = ComputePipelines::new(&device, descriptor_set_layout)?;
 
             let memory_properties = instance.get_physical_device_memory_properties(physical_device);
@@ -190,7 +187,7 @@ impl GPU {
     }
 
     unsafe fn create_instance(entry: &Entry) -> Result<Instance, Box<dyn std::error::Error>> {
-        let app_name = CString::new("Compute App")?;
+        let app_name = CString::new("gpu_mm")?;
         let appinfo = vk::ApplicationInfo {
             s_type: vk::StructureType::APPLICATION_INFO,
             p_next: ptr::null(),
@@ -221,7 +218,6 @@ impl GPU {
         unsafe {
             let memory_properties = self.instance.get_physical_device_memory_properties(self.physical_device);
             
-            // Find the heap index that corresponds to device local (GPU) memory
             let device_local_heap_index = (0..memory_properties.memory_type_count)
                 .find(|&i| {
                     let memory_type = memory_properties.memory_types[i as usize];
@@ -230,7 +226,6 @@ impl GPU {
                 .map(|i| memory_properties.memory_types[i as usize].heap_index)
                 .unwrap_or(0);
             
-            // Get the size of the device local heap
             memory_properties.memory_heaps[device_local_heap_index as usize].size
         }
     }
@@ -317,7 +312,6 @@ impl GPU {
             
             self.device.unmap_memory(memory);
 
-            // Create descriptor set
             let set_layouts = [self.descriptor_set_layout];
             let alloc_info = vk::DescriptorSetAllocateInfo {
                 s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -330,7 +324,6 @@ impl GPU {
 
             let descriptor_set = self.device.allocate_descriptor_sets(&alloc_info)?[0];
 
-            // Update descriptor set
             let buffer_info = vk::DescriptorBufferInfo {
                 buffer,
                 offset: 0,
@@ -393,7 +386,6 @@ impl GPU {
         operation: GPUMemoryOperation,
     ) -> Result<(), Box<dyn std::error::Error>> {
         unsafe {
-            // Create command buffer
             let alloc_info = vk::CommandBufferAllocateInfo {
                 s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
                 p_next: ptr::null(),
@@ -405,7 +397,6 @@ impl GPU {
     
             let command_buffer = self.device.allocate_command_buffers(&alloc_info)?[0];
     
-            // Begin command buffer
             let begin_info = vk::CommandBufferBeginInfo {
                 s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
                 p_next: ptr::null(),
@@ -416,18 +407,18 @@ impl GPU {
     
             self.device.begin_command_buffer(command_buffer, &begin_info)?;
     
-            // Update descriptor set for src2 buffer
             let buffer_info = vk::DescriptorBufferInfo {
                 buffer: src2.buffer,
                 offset: 0,
                 range: src2.size,
             };
     
+            // Use binding 1 for second buffer
             let write_descriptor_set = vk::WriteDescriptorSet {
                 s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
                 p_next: ptr::null(),
                 dst_set: src1.descriptor_set,
-                dst_binding: 1,  // Use binding 1 for second buffer
+                dst_binding: 1,
                 dst_array_element: 0,
                 descriptor_count: 1,
                 descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
@@ -439,7 +430,6 @@ impl GPU {
     
             self.device.update_descriptor_sets(&[write_descriptor_set], &[]);
     
-            // Get and bind the specific pipeline for this operation
             let pipeline = self.compute_pipelines.get_pipeline(operation)
                 .ok_or("Invalid operation")?;
     
@@ -515,7 +505,6 @@ impl GPU {
 
             let command_buffer = self.device.allocate_command_buffers(&alloc_info)?[0];
 
-            // Begin command buffer
             let begin_info = vk::CommandBufferBeginInfo {
                 s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
                 p_next: ptr::null(),

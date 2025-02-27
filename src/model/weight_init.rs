@@ -9,10 +9,10 @@ use super::tensor_desc::TensorDesc;
 
 #[derive(Clone)]
 pub enum WeightInit {
-    Xavier,              // Good for tanh activation
-    He,                  // Good for ReLU activation
-    LeCun,              // Good for SELU activation
-    UniformRandom {     // Simple uniform random in range
+    Xavier,
+    He,
+    LeCun,
+    UniformRandom {
         min: f32,
         max: f32,
     },
@@ -33,7 +33,6 @@ impl WeightInit {
     }
 
     pub fn init(&self, shape: &TensorDesc, total_elements: usize) -> Vec<f32> {
-        // For Linear layers: shape is [out_features, in_features]
         let (fan_in, fan_out) = self.calculate_fan_in_out(shape);
         
         match self {

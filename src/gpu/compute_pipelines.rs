@@ -26,7 +26,6 @@ impl ComputePipelines {
         descriptor_set_layout: vk::DescriptorSetLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let pipeline_layout = unsafe {
-            // Create pipeline layout (same as before, but without push constants since ops are separate)
             let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
                 s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
                 p_next: std::ptr::null(),
@@ -41,7 +40,6 @@ impl ComputePipelines {
             device.create_pipeline_layout(&pipeline_layout_info, None)?
         };
 
-        // Create all pipelines
         let mut pipelines = HashMap::new();
         
         pipelines.insert(
@@ -73,7 +71,6 @@ impl ComputePipelines {
         shader_code: &[u8],
     ) -> Result<vk::Pipeline, Box<dyn std::error::Error>> {
         unsafe {
-            // Create shader module (same as before)
             let aligned_code: Vec<u32>;
             if shader_code.as_ptr().align_offset(4) != 0 {
                 let mut padded = Vec::with_capacity((shader_code.len() + 3) / 4 * 4);
@@ -129,7 +126,6 @@ impl ComputePipelines {
                 None,
             ).map_err(|e| format!("Failed to create compute pipeline: {:?}", e))?[0];
 
-            // Clean up shader module
             device.destroy_shader_module(shader_module, None);
 
             Ok(pipeline)

@@ -1,12 +1,9 @@
 #[derive(Clone, Debug)]
 pub enum TensorDesc {
-    // For vectors/1D tensors (e.g., biases)
     Vector { length: usize },
     
-    // For matrices/2D tensors (e.g., linear layer weights)
     Matrix { rows: usize, cols: usize },
     
-    // For 4D tensors (e.g., conv layer weights, image batches)
     Tensor4D {
         batch: usize,
         channels: usize,
@@ -42,7 +39,7 @@ impl TensorDesc {
         }
     }
 
-    // Convert to Vec<usize> for compatibility with existing code
+    // Convert to Vec<usize>
     pub fn to_dims(&self) -> Vec<usize> {
         match &self {
             Self::Vector { length } => vec![*length],

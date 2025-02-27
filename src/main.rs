@@ -1,10 +1,11 @@
 mod gpu;
 
-use compute::compute_manager::ComputeManager;
-use dataloader::{config::DataLoaderConfig, data_batch::DataBatch, dataloader::{DataLoader, DatasetSplit}, for_imagesdir::DirectoryImageLoader, par_iter::MultithreadedDataLoaderIterator};
+use compute::{compute_manager::ComputeManager, print_model_stats::{print_layer_values, print_model_stats}};
+use dataloader::{config::DataLoaderConfig, data_batch::DataBatch, dataloader::DatasetSplit, for_imagesdir::DirectoryImageLoader, par_iter::MultithreadedDataLoaderIterator};
 use gpu::vk_gpu::GPU;
 
-use model::{layer_type::LayerType, model::ModelDesc, weight_init::WeightInit};
+use layer::factory::Layers;
+use model::{graph_model::GraphModel, weight_init::WeightInit};
 use thread_pool::thread_pool::ThreadPool;
 
 mod thread_pool;
@@ -14,6 +15,8 @@ mod compute;
 mod model;
 
 mod dataloader;
+
+mod layer;
 
 /* Design descisions and some TODOs
     Current proof of concept implementation of image loader stores all file names in memory
@@ -133,22 +136,22 @@ fn main() {
     println!("{:?}", GPU::available_gpus());
 
     //let mut m = ModelDesc::new(64);
-    let mut m = ModelDesc::new_with(64, WeightInit::He);
+    let mut m = GraphModel::new(64);
 
-    m.add_layer(LayerType::InputBuffer { features: 785, track_gradients: false });
+    m.add_layer(Layers::input_buffer(785));
 
-    m.add_layer(LayerType::linear(785, 512));
+    m.add_layer(Layers::linear(785, 512));
 
-    m.add_layer(LayerType::ReLU);
+    m.add_layer(Layers::relu());
 
-    m.add_layer(LayerType::linear(512, 256));
+    m.add_layer(Layers::linear(512, 256));
 
-    m.add_layer(LayerType::ReLU);
+    m.add_layer(Layers::relu());
 
     m.add_layers(vec![
-        LayerType::linear(256, 64),
-        LayerType::ReLU,
-        LayerType::linear(64, 1)
+        Layers::linear(256, 64),
+        Layers::relu(),
+        Layers::linear(64, 1)
     ]);
 
     let cm = ComputeManager::new(m, thread_pool.clone()).unwrap();
@@ -157,7 +160,7 @@ fn main() {
     
     cm.print_model_stats();
 
-    cm.print_layer_values(2);
+    cm.print_layer_values(2).unwrap();
 /*
     {
         println!("Starting GPU memory tracking verification...\n");
