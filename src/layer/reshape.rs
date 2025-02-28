@@ -43,25 +43,29 @@ impl Layer for ReshapeLayer {
         let resolved_shape = match &self.target_shape {
             TensorDesc::Vector { length } => {
                 if *length == 0 {
-                    TensorDesc::Matrix { 
-                        rows: batch_size, 
-                        cols: input_elements 
-                    }
+                    TensorDesc::Vector { length: input_elements }
                 } else {
-                    // Validate total elements
                     if *length != input_elements {
                         return Err(VKMLEngineError::VulkanLoadError(
                             format!("Cannot reshape {} elements into vector of length {}", 
                                     input_elements, length)
                         ));
                     }
-                    TensorDesc::Vector { length: *length }
+                    self.target_shape.clone()
                 }
             },
             TensorDesc::Matrix { rows, cols } => {
-                let (matrix_rows, matrix_cols) = if *rows == 0 && *cols == 0 {
-                    // Flatten case
-                    (batch_size, input_elements)
+                if *rows == 0 && *cols == 0 {
+                    if input_elements % batch_size != 0 {
+                        return Err(VKMLEngineError::VulkanLoadError(
+                            format!("Cannot flatten {} elements into batches of size {}, not evenly divisible", 
+                                    input_elements, batch_size)
+                        ));
+                    }
+                    TensorDesc::Matrix { 
+                        rows: batch_size, 
+                        cols: input_elements / batch_size 
+                    }
                 } else if *rows == 0 {
                     // Infer rows
                     let inferred_rows = input_elements / cols;
@@ -71,7 +75,10 @@ impl Layer for ReshapeLayer {
                                     input_elements, cols)
                         ));
                     }
-                    (inferred_rows, *cols)
+                    TensorDesc::Matrix {
+                        rows: inferred_rows,
+                        cols: *cols
+                    }
                 } else if *cols == 0 {
                     // Infer cols
                     let inferred_cols = input_elements / rows;
@@ -81,54 +88,59 @@ impl Layer for ReshapeLayer {
                                     input_elements, rows)
                         ));
                     }
-                    (*rows, inferred_cols)
+                    TensorDesc::Matrix {
+                        rows: *rows,
+                        cols: inferred_cols
+                    }
                 } else {
-                    // Validate total elements
                     if rows * cols != input_elements {
                         return Err(VKMLEngineError::VulkanLoadError(
                             format!("Cannot reshape {} elements into matrix of size {}x{}", 
                                     input_elements, rows, cols)
                         ));
                     }
-                    (*rows, *cols)
-                };
-                TensorDesc::Matrix { 
-                    rows: matrix_rows, 
-                    cols: matrix_cols 
+                    self.target_shape.clone()
                 }
             },
             TensorDesc::Tensor4D { batch, channels, height, width } => {
-                let (t_batch, t_channels, t_height, t_width) = if *batch == 0 && 
-                    *channels == 0 && *height == 0 && *width == 0 {
-                    // Complete reshape, infer all dimensions
-                    (batch_size, 1, 1, input_elements)
-                } else {
-                    // Validate dimensions
-                    let total_elements = 
-                        (if *batch == 0 { batch_size } else { *batch }) *
+                let zeros = (*batch == 0) as usize + (*channels == 0) as usize +
+                    (*height == 0) as usize + (*width == 0) as usize;
+                
+                if zeros > 1 {
+                    return Err(VKMLEngineError::VulkanLoadError(
+                        "At most one dimension can be inferred (set to 0) in Tensor4D".to_string()
+                    ));
+                } else if zeros == 1 {
+                    let known_product = 
+                        (if *batch == 0 { 1 } else { *batch }) *
                         (if *channels == 0 { 1 } else { *channels }) *
                         (if *height == 0 { 1 } else { *height }) *
                         (if *width == 0 { 1 } else { *width });
                     
-                    if total_elements != input_elements {
+                    let inferred_dim = input_elements / known_product;
+                    
+                    if inferred_dim * known_product != input_elements {
                         return Err(VKMLEngineError::VulkanLoadError(
-                            format!("Cannot reshape {} elements into tensor4D", input_elements)
+                            format!("Cannot reshape {} elements into tensor4D with product {}", 
+                                    input_elements, known_product)
                         ));
                     }
                     
-                    (
-                        if *batch == 0 { batch_size } else { *batch },
-                        if *channels == 0 { 1 } else { *channels },
-                        if *height == 0 { 1 } else { *height },
-                        if *width == 0 { 1 } else { *width }
-                    )
-                };
-                
-                TensorDesc::Tensor4D { 
-                    batch: t_batch, 
-                    channels: t_channels, 
-                    height: t_height, 
-                    width: t_width 
+                    TensorDesc::Tensor4D {
+                        batch: if *batch == 0 { inferred_dim } else { *batch },
+                        channels: if *channels == 0 { inferred_dim } else { *channels },
+                        height: if *height == 0 { inferred_dim } else { *height },
+                        width: if *width == 0 { inferred_dim } else { *width },
+                    }
+                } else {
+                    let total_elements = batch * channels * height * width;
+                    if total_elements != input_elements {
+                        return Err(VKMLEngineError::VulkanLoadError(
+                            format!("Cannot reshape {} elements into tensor4D with {} elements", 
+                                    input_elements, total_elements)
+                        ));
+                    }
+                    self.target_shape.clone()
                 }
             }
         };
