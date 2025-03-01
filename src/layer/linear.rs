@@ -77,10 +77,6 @@ impl Layer for LinearLayer {
         weights_size + bias_size + activation_size + gradient_size
     }
     
-    fn requires_parameters(&self) -> bool {
-        true
-    }
-    
     fn requires_gradients(&self) -> bool {
         true
     }
@@ -97,6 +93,13 @@ impl Layer for LinearLayer {
         
         Some((weights, biases))
     }
+
+    fn parameter_count(&self, _batch_size: usize, _input_shapes: &[&TensorDesc]) -> usize {
+        let weight_params = self.in_features * self.out_features;
+        let bias_params = if self.bias { self.out_features } else { 0 };
+        
+        weight_params + bias_params
+    }
     
     fn input_requirements(&self) -> (usize, Option<usize>) {
         (1, Some(1))
@@ -105,9 +108,10 @@ impl Layer for LinearLayer {
     fn name(&self) -> String {
         "Linear".to_string()
     }
-    
-    fn to_string(&self) -> String {
-        format!("Linear({}, {})", self.in_features, self.out_features)
+
+    fn config_string(&self) -> Option<String> {
+        Some(format!("in_features={}, out_features={}, bias={}", 
+                   self.in_features, self.out_features, self.bias))
     }
     
     fn in_features(&self) -> usize {
@@ -118,7 +122,15 @@ impl Layer for LinearLayer {
         self.out_features
     }
 
-    fn build_layer_exec(&self, batch_size: usize, input_shape: &TensorDesc) -> Result<LayerExecution, VKMLEngineError> {
+    fn build_layer_exec(&self, batch_size: usize, input_shapes: &[&TensorDesc]) -> Result<LayerExecution, VKMLEngineError> {
+        if input_shapes.is_empty() {
+            return Err(VKMLEngineError::VulkanLoadError(
+                "LinearLayer requires at least one input".to_string()
+            ));
+        }
+        
+        let input_shape = input_shapes[0];  // Use the first input shape
+        
         let in_features = match input_shape {
             TensorDesc::Matrix { rows: _, cols } => {
                 if *cols != self.in_features {
@@ -136,7 +148,7 @@ impl Layer for LinearLayer {
         let mut tensors = HashMap::new();
         
         tensors.insert("input".to_string(), ComputeTensor {
-            desc: TensorDesc::new_matrix(batch_size, in_features),
+            desc: input_shape.clone(),
             location: ComputeLocation::Unallocated,
         });
         

@@ -39,14 +39,12 @@ impl ComputeManager {
     }
 
     pub fn new_with(mut model: GraphModel, thread_pool: Arc<ThreadPool>, gpus: Vec<GPU>, cpu_memory_limit_bytes: Option<u64>) -> Result<Self, VKMLEngineError> {
-        // Verify the model if not already verified
         if model.verified.is_none() {
             model.verify()?;
         }
 
         let cpu = CPUCompute::new(cpu_memory_limit_bytes, thread_pool.clone());
         
-        // Create initial compute manager without execution pipeline
         let mut manager = Self {
             gpus,
             current_gpu_index: 0,
@@ -56,17 +54,14 @@ impl ComputeManager {
             execution_pipeline: Vec::new(),
         };
         
-        // Build the execution pipeline
         manager.build_execution_pipeline()?;
         
-        // Calculate total memory requirements
         let total_memory = manager.calculate_total_memory_requirements();
         let total_available: u64 = manager.gpus.iter()
             .map(|gpu| gpu.available_memory())
             .sum::<u64>()
             + manager.cpu.memory_tracking.get_available();
 
-        // Check if we have enough memory
         if total_memory > total_available {
             return Err(VKMLEngineError::OutOfMemory(
                 format!("Model requires {} bytes but only {} available", 
@@ -74,14 +69,12 @@ impl ComputeManager {
             ));
         }
         
-        // Allocate layers based on execution pipeline
         manager.allocate_execution_pipeline()?;
         
         Ok(manager)
     }
 
     fn build_execution_pipeline(&mut self) -> Result<(), VKMLEngineError> {     
-        // Get the execution order from the verified model
         let execution_order = match &self.model.verified {
             Some(verified) => &verified.execution_order,
             None => return Err(VKMLEngineError::VulkanLoadError("Model not verified".into())),
@@ -89,24 +82,20 @@ impl ComputeManager {
         
         self.execution_pipeline.clear();
         
-        // Process each layer in execution order
         for &layer_id in execution_order {
             let layer = self.model.layers.get(&layer_id)
                 .ok_or_else(|| VKMLEngineError::VulkanLoadError(
                     format!("Layer {} not found in model", layer_id)
                 ))?;
             
-            // Get input shapes from connected layers
             let input_shapes: Vec<TensorDesc> = layer.input_connections.iter()
                 .map(|connection| {
                     let input_id = connection.get_layerid();
                     let output_idx = connection.get_outputidx();
-                    
-                    // Find the execution step that produced this input
+
                     self.execution_pipeline.iter()
                         .find(|step| step.layer_id == input_id)
                         .map(|step| {
-                            // Access the specific output tensor by index
                             if output_idx < step.output_tensors.len() {
                                 step.output_tensors[output_idx].clone()
                             } else {
@@ -122,53 +111,16 @@ impl ComputeManager {
             
             let input_shape_refs: Vec<&TensorDesc> = input_shapes.iter().collect();
             
-            // For input layers or layers with no inputs, create a default shape
-            let input_shape = if input_shapes.is_empty() {
-                match layer.layer.input_requirements().0 {
-                    0 => {
-                        // Input layer - create a default shape based on output features
-                        TensorDesc::Matrix { 
-                            rows: self.model.batch_size, 
-                            cols: layer.layer.out_features() 
-                        }
-                    },
-                    _ => {
-                        return Err(VKMLEngineError::VulkanLoadError(
-                            format!("Layer {} requires inputs but none were provided", layer_id)
-                        ));
-                    }
-                }
-            } else {
-                // Use the first input shape
-                input_shapes[0].clone()
-            };
+            let output_shapes = layer.layer.output_shapes(self.model.batch_size, &input_shape_refs)?;
             
-            // Build layer execution plan
-            let mut layer_exec = layer.layer.build_layer_exec(self.model.batch_size, &input_shape)?;
+            let mut layer_exec = layer.layer.build_layer_exec(self.model.batch_size, &input_shape_refs)?;
             
-            // Update the LoadInput instructions to include output_idx
+            // Update the instructions to include the correct layer_tensor_idx
             for instruction in &mut layer_exec.instructions {
-                // First handle the case for LoadInput (which will be renamed to CopyInput)
-                if let Instruction::CopyInput { layer_idx, dst, .. } = instruction {
-                    // Get the connection for this input index
+                if let Instruction::ReadInput { layer_idx, dst, .. } = instruction {
                     if *layer_idx < layer.input_connections.len() {
                         let layer_tensor_idx = layer.input_connections[*layer_idx].get_outputidx();
                         
-                        // Replace with updated CopyInput instruction
-                        *instruction = Instruction::CopyInput {
-                            layer_idx: *layer_idx,
-                            layer_tensor_idx,
-                            dst: dst.clone(),
-                        };
-                    }
-                }
-                // Also handle any newly added ReadInput instructions
-                else if let Instruction::ReadInput { layer_idx, dst, .. } = instruction {
-                    // Get the connection for this input index
-                    if *layer_idx < layer.input_connections.len() {
-                        let layer_tensor_idx = layer.input_connections[*layer_idx].get_outputidx();
-                        
-                        // Replace with updated ReadInput instruction
                         *instruction = Instruction::ReadInput {
                             layer_idx: *layer_idx,
                             layer_tensor_idx,
@@ -178,19 +130,6 @@ impl ComputeManager {
                 }
             }
             
-            // Calculate output shapes using the new method
-            let output_shapes = layer.layer.output_shapes(self.model.batch_size, &input_shape_refs)?;
-            
-            if output_shapes.is_empty() {
-                return Err(VKMLEngineError::VulkanLoadError(
-                    format!("Layer {} returned no output shapes", layer_id)
-                ));
-            }
-            
-            // Use the first output shape as the primary output (backwards compatibility)
-            let output_tensor = output_shapes[0].clone();
-            
-            // Add to execution pipeline with all output shapes
             self.execution_pipeline.push(ExecutionStep {
                 layer_id,
                 layer_exec,
@@ -214,31 +153,25 @@ impl ComputeManager {
 
     fn allocate_execution_pipeline(&mut self) -> Result<(), VKMLEngineError> {
         for step_index in 0..self.execution_pipeline.len() {
-            // Get step information
             let step = &self.execution_pipeline[step_index];
             let layer_id = step.layer_id;
             
-            // Find tensors that need allocation
             let tensors_to_allocate: Vec<(String, TensorDesc)> = step.layer_exec.tensors.iter()
                 .filter(|(_, tensor)| matches!(tensor.location, ComputeLocation::Unallocated))
                 .map(|(name, tensor)| (name.clone(), tensor.desc.clone()))
                 .collect();
             
-            // Skip if nothing to allocate
             if tensors_to_allocate.is_empty() {
                 continue;
             }
             
-            // Calculate total memory required
             let total_memory: u64 = tensors_to_allocate.iter()
                 .map(|(_, desc)| desc.size_in_bytes() as u64)
                 .sum();
             
-            // Get weight initialization strategy
             let layer = self.model.layers.get_mut(&layer_id).unwrap();
             let weight_init = layer.weight_init.as_ref().unwrap_or(&self.model.weight_init).clone();
             
-            // Find optimal device using the extracted method
             let target_device = self.find_optimal_device(total_memory)
                 .ok_or_else(|| VKMLEngineError::OutOfMemory(
                     format!("No device has enough memory for layer {}: {} bytes", layer_id, total_memory)
@@ -311,12 +244,10 @@ impl ComputeManager {
 
         match *target_device {
             DeviceLocation::CPU => {
-                // Allocate CPU memory
                 self.cpu.memory_tracking.allocate(size_in_bytes)?;
                 Ok(ComputeLocation::CPU(initial_data))
             },
             DeviceLocation::GPU(idx) => {
-                // Allocate GPU memory
                 let gpu = &mut self.gpus[idx];
                 gpu.allocate_memory(size_in_bytes)?;
                 
@@ -336,7 +267,6 @@ impl ComputeManager {
         tensor: &mut ComputeTensor,
         target_device: &DeviceLocation
     ) -> Result<(), VKMLEngineError> {
-        // If tensor is Parameterless, no need to move anything
         if let ComputeLocation::Unallocated = tensor.location {
             return Ok(());
         }
@@ -421,7 +351,6 @@ impl ComputeManager {
             ComputeLocation::Unallocated => unreachable!(),
         }
     
-        // Update tensor location
         tensor.location = new_location;
         Ok(())
     }
@@ -442,7 +371,6 @@ impl ComputeManager {
         }
     }
     
-    // Get device description for a tensor
     pub fn get_device_description(&self, tensor: &ComputeTensor) -> String {
         match &tensor.location {
             ComputeLocation::CPU(_) => "CPU".to_string(),
@@ -451,18 +379,11 @@ impl ComputeManager {
         }
     }
     
-    // Calculate parameters for a layer
     pub fn calculate_layer_parameters(&self, layer_id: LayerId) -> usize {
         if let Some(layer) = self.model.layers.get(&layer_id) {
             if let Some(step) = self.execution_pipeline.iter().find(|step| step.layer_id == layer_id) {
-                if layer.layer.requires_parameters() {
-                    let input_shapes: Vec<&TensorDesc> = step.input_tensors.iter().collect();
-                    if let Some((weights, biases)) = layer.layer.parameter_shapes(&input_shapes) {
-                        return weights.num_elements() + 
-                               if layer.layer.to_string().contains("bias=false") { 0 } 
-                               else { biases.num_elements() };
-                    }
-                }
+                let input_shapes: Vec<&TensorDesc> = step.input_tensors.iter().collect();
+                return layer.layer.parameter_count(self.model.batch_size, &input_shapes);
             }
         }
         0
@@ -473,18 +394,15 @@ impl ComputeManager {
         format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
     }
     
-    // Get total memory usage per device
     pub fn get_memory_usage_summary(&self) -> Vec<(String, String, String)> {
         let mut result = Vec::new();
         
-        // CPU memory
         result.push((
             "CPU".to_string(),
             self.format_memory_mb(self.cpu.memory_tracking.get_current()),
             self.format_memory_mb(self.cpu.memory_tracking.get_available())
         ));
         
-        // GPU memory
         for (i, gpu) in self.gpus.iter().enumerate() {
             result.push((
                 format!("GPU {}", i),
@@ -502,7 +420,6 @@ impl ComputeManager {
             .map(|step| step.output_tensors.iter().collect())
     }
     
-    // Get the memory usage for a layer
     pub fn get_layer_memory_usage(&self, layer_id: LayerId) -> u64 {
         self.execution_pipeline.iter()
             .find(|step| step.layer_id == layer_id)
@@ -513,29 +430,26 @@ impl ComputeManager {
             })
     }
     
-    // Get the output tensor name for a layer
     pub fn get_layer_output_tensor_name(&self, layer_id: LayerId) -> Option<&str> {
         self.execution_pipeline.iter()
             .find(|step| step.layer_id == layer_id)
             .and_then(|step| step.layer_exec.outputs.first().map(|s| s.as_str()))
     }
     
-    // Get the execution order
     pub fn get_execution_order_slice(&self) -> &[LayerId] {
         if let Some(verified) = &self.model.verified {
             &verified.execution_order
         } else {
-            &[] // Empty slice literal
+            &[]
         }
     }
-    // Access specific tensor for a layer (by name)
+
     pub fn get_layer_tensor(&self, layer_id: LayerId, tensor_name: &str) -> Option<&ComputeTensor> {
         self.execution_pipeline.iter()
             .find(|step| step.layer_id == layer_id)
             .and_then(|step| step.layer_exec.tensors.get(tensor_name))
     }
     
-    // Get all tensor names for a layer
     pub fn get_layer_tensor_names(&self, layer_id: LayerId) -> Option<Vec<&str>> {
         self.execution_pipeline.iter()
             .find(|step| step.layer_id == layer_id)

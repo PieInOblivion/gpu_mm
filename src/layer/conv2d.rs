@@ -115,10 +115,6 @@ impl Layer for Conv2DLayer {
         weights_size + bias_size + activation_size + gradient_size
     }
     
-    fn requires_parameters(&self) -> bool {
-        true
-    }
-    
     fn requires_gradients(&self) -> bool {
         true
     }
@@ -137,6 +133,13 @@ impl Layer for Conv2DLayer {
         
         Some((weights, biases))
     }
+
+    fn parameter_count(&self, _batch_size: usize, _input_shapes: &[&TensorDesc]) -> usize {
+        let weight_params = self.out_features * self.in_features * self.kernel_h * self.kernel_w;
+        let bias_params = if self.bias { self.out_features } else { 0 };
+        
+        weight_params + bias_params
+    }
     
     fn input_requirements(&self) -> (usize, Option<usize>) {
         (1, Some(1))
@@ -146,14 +149,15 @@ impl Layer for Conv2DLayer {
         "Conv2D".to_string()
     }
     
-    fn to_string(&self) -> String {
-        format!(
-            "Conv2D({}, {}, {}x{}, s={}x{}, p={}x{})", 
+    fn config_string(&self) -> Option<String> {
+        Some(format!(
+            "in_channels={}, out_channels={}, kernel={}×{}, stride={}×{}, padding={}×{}, bias={}", 
             self.in_features, self.out_features,
             self.kernel_h, self.kernel_w,
             self.stride_h, self.stride_w,
-            self.padding_h, self.padding_w
-        )
+            self.padding_h, self.padding_w,
+            self.bias
+        ))
     }
     
     fn in_features(&self) -> usize {
@@ -164,7 +168,15 @@ impl Layer for Conv2DLayer {
         self.out_features
     }
 
-    fn build_layer_exec(&self, batch_size: usize, input_shape: &TensorDesc) -> Result<LayerExecution, VKMLEngineError> {
+    fn build_layer_exec(&self, batch_size: usize, input_shapes: &[&TensorDesc]) -> Result<LayerExecution, VKMLEngineError> {
+        if input_shapes.is_empty() {
+            return Err(VKMLEngineError::VulkanLoadError(
+                "Conv2D layer requires an input".to_string()
+            ));
+        }
+        
+        let input_shape = input_shapes[0];
+        
         let (in_channels, in_height, in_width) = match input_shape {
             TensorDesc::Tensor4D { batch: _, channels, height, width } => {
                 if *channels != self.in_features {

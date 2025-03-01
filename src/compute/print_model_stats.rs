@@ -8,10 +8,10 @@ pub fn print_model_stats(cm: &ComputeManager) {
     println!("================");
     println!("\nBatch Size: {}", cm.model.batch_size);
     println!("\nLayer Details:");
-    println!("{:-<90}", "");
-    println!("{:<4} {:<20} {:<15} {:<15} {:<15} {:<15}", 
-        "ID", "Type", "Parameters", "Memory (MB)", "Output Shape", "Device");
-    println!("{:-<90}", "");
+    println!("{:-<80}", "");
+    println!("{:<4} {:<14} {:<12} {:<10} {:<20} {:<15}", 
+        "ID", "Type", "Parameters", "Memory", "Output Shape", "Device");
+    println!("{:-<80}", "");
 
     let execution_order = cm.get_execution_order_slice();
     
@@ -25,7 +25,6 @@ pub fn print_model_stats(cm: &ComputeManager) {
             let output_tensor_name = cm.get_layer_output_tensor_name(layer_id)
                 .unwrap_or("output");
             
-            // Find the execution step for this layer
             let output_shapes = cm.execution_pipeline.iter()
                 .find(|step| step.layer_id == layer_id)
                 .map(|step| {
@@ -47,16 +46,27 @@ pub fn print_model_stats(cm: &ComputeManager) {
                 .map(|t| cm.get_device_description(t))
                 .unwrap_or_else(|| "Unallocated".to_string());
             
-            println!("{:<4} {:<20} {:<15} {:<15} {:<15} {:<15}", 
-                layer_id, layer.layer.to_string(), params, cm.format_memory_mb(memory_bytes), 
-                output_shapes, device_location);
+            let layer_type = layer.layer.name();
+            let layer_config = layer.layer.config_string();
+            
+            println!("{:<4} {:<14} {:<12} {:<10} {:<20} {:<15}", 
+                layer_id, 
+                layer_type, 
+                params, 
+                cm.format_memory_mb(memory_bytes), 
+                output_shapes, 
+                device_location);
+            
+            if let Some(config) = layer_config {
+                println!("     └─ Config: {}", config);
+            }
             
             total_params += params;
             total_memory += memory_bytes;
         }
     }
 
-    println!("{:-<90}", "");
+    println!("{:-<80}", "");
     println!("\nGraph Structure:");
     println!("Entry points: {:?}", cm.model.verified.as_ref().map_or(vec![], |v| v.entry_points.clone()));
     println!("Exit points: {:?}", cm.model.verified.as_ref().map_or(vec![], |v| v.exit_points.clone()));
@@ -77,7 +87,7 @@ pub fn print_layer_values(cm: &ComputeManager, layer_id: LayerId) -> Result<(), 
         VKMLEngineError::VulkanLoadError(format!("Layer ID {} not found", layer_id))
     )?;
     
-    println!("\nLayer {} Values ({})", layer_id, layer.layer.to_string());
+    println!("\nLayer {} Values ({})", layer_id, layer.layer.name());
     println!("{:-<120}", "");
     println!("Input connections: {:?}", layer.input_connections);
     println!("Output connections: {:?}", layer.output_connections);

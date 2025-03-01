@@ -67,16 +67,8 @@ impl Layer for ElementWiseLayer {
         activation_size * 2  // For activations and gradients
     }
     
-    fn requires_parameters(&self) -> bool {
-        false
-    }
-    
     fn requires_gradients(&self) -> bool {
         true
-    }
-    
-    fn parameter_shapes(&self, _input_shapes: &[&TensorDesc]) -> Option<(TensorDesc, TensorDesc)> {
-        None
     }
     
     fn input_requirements(&self) -> (usize, Option<usize>) {
@@ -86,82 +78,90 @@ impl Layer for ElementWiseLayer {
     fn name(&self) -> String {
         self.operation.name()
     }
-    
-    fn to_string(&self) -> String {
-        format!("{}Layer", self.operation.name())
-    }
-    
-    fn in_features(&self) -> usize {
-        0  // Dynamic based on input
-    }
-    
-    fn out_features(&self) -> usize {
-        0  // Dynamic based on input
-    }
 
-    fn build_layer_exec(&self, _batch_size: usize, input_shape: &TensorDesc) -> Result<LayerExecution, VKMLEngineError> {
+    fn build_layer_exec(&self, batch_size: usize, input_shapes: &[&TensorDesc]) -> Result<LayerExecution, VKMLEngineError> {
+        if input_shapes.len() < 2 {
+            return Err(VKMLEngineError::VulkanLoadError(
+                format!("Element-wise operation requires at least 2 inputs, got {}", input_shapes.len())
+            ));
+        }
+        
+        // Check that all inputs have the same shape
+        let first_shape = input_shapes[0];
+        for shape in &input_shapes[1..] {
+            if shape.to_dims() != first_shape.to_dims() {
+                return Err(VKMLEngineError::VulkanLoadError(
+                    format!("Element-wise operations require matching dimensions: {:?} vs {:?}", 
+                           first_shape.to_dims(), shape.to_dims())
+                ));
+            }
+        }
+        
         let mut tensors = HashMap::new();
         
         tensors.insert("input0".to_string(), ComputeTensor {
-            desc: input_shape.clone(),
+            desc: first_shape.clone(),
             location: ComputeLocation::Unallocated,
         });
         
         tensors.insert("input1".to_string(), ComputeTensor {
-            desc: input_shape.clone(),
+            desc: first_shape.clone(),
             location: ComputeLocation::Unallocated,
         });
         
         tensors.insert("output".to_string(), ComputeTensor {
-            desc: input_shape.clone(),
+            desc: first_shape.clone(),
             location: ComputeLocation::Unallocated,
         });
         
-        let instructions = vec![
-            Instruction::ReadInput {
-                layer_idx: 0,
-                layer_tensor_idx: 0,
-                dst: "input0".to_string(),
+        let mut instructions = Vec::new();
+        
+        instructions.push(Instruction::ReadInput {
+            layer_idx: 0,
+            layer_tensor_idx: 0,
+            dst: "input0".to_string(),
+        });
+        
+        instructions.push(Instruction::ReadInput {
+            layer_idx: 1,
+            layer_tensor_idx: 0,
+            dst: "input1".to_string(),
+        });
+        
+        let element_wise_instruction = match self.operation {
+            ElementWiseOperation::Add => Instruction::Add {
+                src1: "input0".to_string(),
+                src2: "input1".to_string(),
+                dst: "output".to_string(),
             },
-            Instruction::ReadInput {
-                layer_idx: 1,
-                layer_tensor_idx: 0,
-                dst: "input1".to_string(),
+            ElementWiseOperation::Subtract => Instruction::Sub {
+                src1: "input0".to_string(),
+                src2: "input1".to_string(),
+                dst: "output".to_string(),
             },
-            
-            match self.operation {
-                ElementWiseOperation::Add => Instruction::Add {
-                    src1: "input0".to_string(),
-                    src2: "input1".to_string(),
-                    dst: "output".to_string(),
-                },
-                ElementWiseOperation::Subtract => Instruction::Sub {
-                    src1: "input0".to_string(),
-                    src2: "input1".to_string(),
-                    dst: "output".to_string(),
-                },
-                ElementWiseOperation::Multiply => Instruction::Mul {
-                    src1: "input0".to_string(),
-                    src2: "input1".to_string(),
-                    dst: "output".to_string(),
-                },
-                ElementWiseOperation::Divide => Instruction::Div {
-                    src1: "input0".to_string(),
-                    src2: "input1".to_string(),
-                    dst: "output".to_string(),
-                },
-                ElementWiseOperation::Minimum => Instruction::Min {
-                    src1: "input0".to_string(),
-                    src2: "input1".to_string(),
-                    dst: "output".to_string(),
-                },
-                ElementWiseOperation::Maximum => Instruction::Max {
-                    src1: "input0".to_string(),
-                    src2: "input1".to_string(),
-                    dst: "output".to_string(),
-                },
+            ElementWiseOperation::Multiply => Instruction::Mul {
+                src1: "input0".to_string(),
+                src2: "input1".to_string(),
+                dst: "output".to_string(),
             },
-        ];
+            ElementWiseOperation::Divide => Instruction::Div {
+                src1: "input0".to_string(),
+                src2: "input1".to_string(),
+                dst: "output".to_string(),
+            },
+            ElementWiseOperation::Maximum => Instruction::Max {
+                src1: "input0".to_string(),
+                src2: "input1".to_string(),
+                dst: "output".to_string(),
+            },
+            ElementWiseOperation::Minimum => Instruction::Min {
+                src1: "input0".to_string(),
+                src2: "input1".to_string(),
+                dst: "output".to_string(),
+            },
+        };
+        
+        instructions.push(element_wise_instruction);
         
         Ok(LayerExecution {
             tensors,

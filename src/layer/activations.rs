@@ -76,16 +76,8 @@ impl Layer for ActivationLayer {
         activation_size * 2
     }
     
-    fn requires_parameters(&self) -> bool {
-        false
-    }
-    
     fn requires_gradients(&self) -> bool {
         true
-    }
-    
-    fn parameter_shapes(&self, _input_shapes: &[&TensorDesc]) -> Option<(TensorDesc, TensorDesc)> {
-        None
     }
     
     fn input_requirements(&self) -> (usize, Option<usize>) {
@@ -96,19 +88,23 @@ impl Layer for ActivationLayer {
         self.activation_type.name()
     }
     
-    fn to_string(&self) -> String {
-        self.activation_type.to_string()
-    }
-    
-    fn in_features(&self) -> usize {
-        0  // Dynamic based on input
-    }
-    
-    fn out_features(&self) -> usize {
-        0  // Dynamic based on input
+    fn config_string(&self) -> Option<String> {
+        match &self.activation_type {
+            ActivationType::LeakyReLU(alpha) => Some(format!("alpha={}", alpha)),
+            ActivationType::Softmax(dim) => Some(format!("dim={}", dim)),
+            _ => None
+        }
     }
 
-    fn build_layer_exec(&self, _batch_size: usize, input_shape: &TensorDesc) -> Result<LayerExecution, VKMLEngineError> {
+    fn build_layer_exec(&self, batch_size: usize, input_shapes: &[&TensorDesc]) -> Result<LayerExecution, VKMLEngineError> {
+        if input_shapes.is_empty() {
+            return Err(VKMLEngineError::VulkanLoadError(
+                "Activation layer requires an input".to_string()
+            ));
+        }
+        
+        let input_shape = input_shapes[0];
+        
         let mut tensors = HashMap::new();
         
         tensors.insert("input".to_string(), ComputeTensor {

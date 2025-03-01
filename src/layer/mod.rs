@@ -7,3 +7,4 @@ pub mod activations;
 pub mod element_wise;
 pub mod factory;
 pub mod execution;
+pub mod concat;

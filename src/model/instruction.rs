@@ -32,14 +32,19 @@ pub enum Instruction {
     
     // Data movement and shaping
     ReadInput {
-        layer_idx: usize,    // Which input port of the current layer
-        layer_tensor_idx: usize,  // Which output port of the source layer
+        layer_idx: usize,          // Which input port of the current layer
+        layer_tensor_idx: usize,   // Which output port of the source layer
         dst: String                // Destination tensor name
     },
     CopyInput {
-        layer_idx: usize,    // Which input port of the current layer
-        layer_tensor_idx: usize,  // Which output port of the source layer
+        layer_idx: usize,          // Which input port of the current layer
+        layer_tensor_idx: usize,   // Which output port of the source layer
         dst: String                // Destination tensor name
     },
     Reshape { src: String, dst: String, new_shape: TensorDesc },
+    Concat {
+        sources: Vec<String>,      // Names of input tensors
+        dst: String,               // Name of output tensor
+        dim: usize,                // Dimension along which to concatenate
+    },
 }

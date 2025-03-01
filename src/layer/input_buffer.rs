@@ -54,16 +54,8 @@ impl Layer for InputLayer {
         activation_memory + gradient_memory
     }
     
-    fn requires_parameters(&self) -> bool {
-        false
-    }
-    
     fn requires_gradients(&self) -> bool {
         self.track_gradients
-    }
-    
-    fn parameter_shapes(&self, _input_shapes: &[&TensorDesc]) -> Option<(TensorDesc, TensorDesc)> {
-        None
     }
     
     fn input_requirements(&self) -> (usize, Option<usize>) {
@@ -74,23 +66,21 @@ impl Layer for InputLayer {
         "InputBuffer".to_string()
     }
     
-    fn to_string(&self) -> String {
+    fn config_string(&self) -> Option<String> {
         if self.track_gradients {
-            format!("InputBuffer({}, with gradients)", self.out_features)
+            Some(format!("features={}, with_gradients=true", self.out_features))
         } else {
-            format!("InputBuffer({})", self.out_features)
+            Some(format!("features={}", self.out_features))
         }
-    }
-    
-    fn in_features(&self) -> usize {
-        0
     }
     
     fn out_features(&self) -> usize {
         self.out_features
     }
 
-    fn build_layer_exec(&self, batch_size: usize, _input_shape: &TensorDesc) -> Result<LayerExecution, VKMLEngineError> {
+    fn build_layer_exec(&self, batch_size: usize, input_shapes: &[&TensorDesc]) -> Result<LayerExecution, VKMLEngineError> {
+        // Input layers don't need input_shapes - they create their own shapes
+        
         let mut tensors = HashMap::new();
         
         tensors.insert("output".to_string(), ComputeTensor {
@@ -105,7 +95,7 @@ impl Layer for InputLayer {
             });
         }
         
-        // We transfer cpu or other gpu data into this. Layer needs to only exist
+        // No instructions needed - data will be transferred directly
         let instructions = vec![];
         
         Ok(LayerExecution {

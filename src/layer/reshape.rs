@@ -152,16 +152,8 @@ impl Layer for ReshapeLayer {
         output_shape.size_in_bytes() as u64
     }
     
-    fn requires_parameters(&self) -> bool {
-        false
-    }
-    
     fn requires_gradients(&self) -> bool {
         true
-    }
-    
-    fn parameter_shapes(&self, _input_shapes: &[&TensorDesc]) -> Option<(TensorDesc, TensorDesc)> {
-        None
     }
     
     fn input_requirements(&self) -> (usize, Option<usize>) {
@@ -172,12 +164,21 @@ impl Layer for ReshapeLayer {
         "Reshape".to_string()
     }
     
-    fn to_string(&self) -> String {
-        format!("Reshape({:?})", self.target_shape)
-    }
-    
-    fn in_features(&self) -> usize {
-        0  // Dynamic based on input
+    fn config_string(&self) -> Option<String> {
+        let shape_str = match &self.target_shape {
+            TensorDesc::Vector { length } => format!("vector(length={})", length),
+            TensorDesc::Matrix { rows, cols } => {
+                if *rows == 0 && *cols == 0 {
+                    "flatten".to_string()
+                } else {
+                    format!("matrix(rows={}, cols={})", rows, cols)
+                }
+            },
+            TensorDesc::Tensor4D { batch, channels, height, width } => 
+                format!("tensor4d(batch={}, channels={}, height={}, width={})", 
+                    batch, channels, height, width),
+        };
+        Some(format!("target_shape={}", shape_str))
     }
     
     fn out_features(&self) -> usize {
@@ -188,7 +189,15 @@ impl Layer for ReshapeLayer {
         }
     }
 
-    fn build_layer_exec(&self, batch_size: usize, input_shape: &TensorDesc) -> Result<LayerExecution, VKMLEngineError> {
+    fn build_layer_exec(&self, batch_size: usize, input_shapes: &[&TensorDesc]) -> Result<LayerExecution, VKMLEngineError> {
+        if input_shapes.is_empty() {
+            return Err(VKMLEngineError::VulkanLoadError(
+                "Reshape layer requires an input".to_string()
+            ));
+        }
+        
+        let input_shape = input_shapes[0];
+        
         let mut tensors = HashMap::new();
         
         tensors.insert("input".to_string(), ComputeTensor {
