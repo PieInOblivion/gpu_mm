@@ -1,4 +1,4 @@
-use crate::{compute::compute_manager::{ComputeManager, ComputeTensor}, dataloader::error::VKMLEngineError, model::layer_connection::LayerId};
+use crate::{compute::compute_manager::{ComputeManager, ComputeTensor}, dataloader::error::VKMLEngineError, model::layer_connection::{LayerConnection, LayerId}};
 
 pub fn print_model_stats(cm: &ComputeManager) {
     let mut total_params = 0usize;
@@ -8,10 +8,10 @@ pub fn print_model_stats(cm: &ComputeManager) {
     println!("================");
     println!("\nBatch Size: {}", cm.model.batch_size);
     println!("\nLayer Details:");
-    println!("{:-<80}", "");
-    println!("{:<4} {:<14} {:<12} {:<10} {:<20} {:<15}", 
-        "ID", "Type", "Parameters", "Memory", "Output Shape", "Device");
-    println!("{:-<80}", "");
+    println!("{:-<125}", "");
+    println!("{:<4} {:<12} {:<12} {:<10} {:<18} {:<18} {:<12} {:<20} {}", 
+        "ID", "Type", "Params", "Memory", "Input Shape", "Output Shape", "Device", "Connections", "Config");
+    println!("{:-<125}", "");
 
     let execution_order = cm.get_execution_order_slice();
     
@@ -20,24 +20,63 @@ pub fn print_model_stats(cm: &ComputeManager) {
         return;
     }
 
-    for &layer_id in execution_order {
+    // Sort the layer IDs in ascending order for consistent output
+    let mut ordered_layer_ids: Vec<LayerId> = execution_order.to_vec();
+    ordered_layer_ids.sort();
+
+    for &layer_id in &ordered_layer_ids {
         if let Some(layer) = cm.model.layers.get(&layer_id) {
             let output_tensor_name = cm.get_layer_output_tensor_name(layer_id)
                 .unwrap_or("output");
             
-            let output_shapes = cm.execution_pipeline.iter()
+            // Get input shapes
+            let input_shapes_str = if layer.input_connections.is_empty() {
+                "None".to_string()
+            } else {
+                cm.execution_pipeline.iter()
+                    .find(|step| step.layer_id == layer_id)
+                    .map(|step| {
+                        step.input_tensors.iter()
+                            .map(|shape| {
+                                let dims = shape.to_dims();
+                                if dims.len() <= 4 {
+                                    dims.iter()
+                                        .map(|&d| d.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join("×")
+                                } else {
+                                    format!("{}d tensor", dims.len())
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_else(|| "Unknown".to_string())
+            };
+            
+            // Get output shapes
+            let output_shapes_str = cm.execution_pipeline.iter()
                 .find(|step| step.layer_id == layer_id)
                 .map(|step| {
                     step.output_tensors.iter()
-                      .map(|shape| shape.to_dims()
-                          .iter()
-                          .map(|&d| d.to_string())
-                          .collect::<Vec<_>>()
-                          .join("×"))
-                      .collect::<Vec<_>>()
-                      .join(", ")
+                        .map(|shape| {
+                            let dims = shape.to_dims();
+                            if dims.len() <= 4 {
+                                dims.iter()
+                                    .map(|&d| d.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join("×")
+                            } else {
+                                format!("{}d tensor", dims.len())
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 })
                 .unwrap_or_else(|| "Unknown".to_string());
+            
+            // Format input and output connections
+            let connections_str = format_layer_connections(&layer.input_connections, &layer.output_connections);
             
             let memory_bytes = cm.get_layer_memory_usage(layer_id);
             let params = cm.calculate_layer_parameters(layer_id);
@@ -47,29 +86,77 @@ pub fn print_model_stats(cm: &ComputeManager) {
                 .unwrap_or_else(|| "Unallocated".to_string());
             
             let layer_type = layer.layer.name();
-            let layer_config = layer.layer.config_string();
+            let layer_config = layer.layer.config_string().unwrap_or_default();
             
-            println!("{:<4} {:<14} {:<12} {:<10} {:<20} {:<15}", 
+            println!("{:<4} {:<12} {:<12} {:<10} {:<18} {:<18} {:<12} {:<20} {}", 
                 layer_id, 
                 layer_type, 
                 params, 
                 cm.format_memory_mb(memory_bytes), 
-                output_shapes, 
-                device_location);
-            
-            if let Some(config) = layer_config {
-                println!("     └─ Config: {}", config);
-            }
+                input_shapes_str, 
+                output_shapes_str, 
+                device_location,
+                connections_str,
+                layer_config);
             
             total_params += params;
             total_memory += memory_bytes;
         }
     }
 
+    println!("{:-<125}", "");
+    
+    // Print a more detailed connection view, also in sorted order
+    println!("\nLayer Connections (detailed):");
     println!("{:-<80}", "");
+    println!("{:<4} {:<35} {:<35}", "ID", "Inputs From (layer:output)", "Outputs To (layer:output)");
+    println!("{:-<80}", "");
+    
+    for &layer_id in &ordered_layer_ids {
+        if let Some(layer) = cm.model.layers.get(&layer_id) {
+            // Preserve original connection order
+            let inputs_str = if layer.input_connections.is_empty() {
+                "None".to_string()
+            } else {
+                layer.input_connections.iter()
+                    .map(|conn| match conn {
+                        LayerConnection::DefaultOutput(id) => format!("{}:0", id),
+                        LayerConnection::SpecificOutput(id, idx) => format!("{}:{}", id, idx),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            
+            let outputs_str = if layer.output_connections.is_empty() {
+                "None".to_string()
+            } else {
+                layer.output_connections.iter()
+                    .map(|conn| match conn {
+                        LayerConnection::DefaultOutput(id) => format!("{}:0", id),
+                        LayerConnection::SpecificOutput(id, idx) => format!("{}:{}", id, idx),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            
+            println!("{:<4} {:<35} {:<35}", 
+                layer_id, 
+                inputs_str,
+                outputs_str);
+        }
+    }
+    
+    println!("{:-<80}", "");
+    
+    // Sort entry and exit points for consistent display
+    let mut entry_points = cm.model.verified.as_ref().map_or(vec![], |v| v.entry_points.clone());
+    let mut exit_points = cm.model.verified.as_ref().map_or(vec![], |v| v.exit_points.clone());
+    entry_points.sort();
+    exit_points.sort();
+    
     println!("\nGraph Structure:");
-    println!("Entry points: {:?}", cm.model.verified.as_ref().map_or(vec![], |v| v.entry_points.clone()));
-    println!("Exit points: {:?}", cm.model.verified.as_ref().map_or(vec![], |v| v.exit_points.clone()));
+    println!("Entry points: {:?}", entry_points);
+    println!("Exit points: {:?}", exit_points);
     
     println!("\nModel Summary:");
     println!("Total Parameters: {}", total_params);
@@ -80,6 +167,43 @@ pub fn print_model_stats(cm: &ComputeManager) {
         println!("{} Memory Used: {}", device, used);
         println!("{} Memory Available: {}", device, available);
     }
+}
+
+// Helper function to format layer connections in a compact way
+fn format_layer_connections(inputs: &[LayerConnection], outputs: &[LayerConnection]) -> String {
+    // Maintain original order of connections
+    let in_ids: Vec<String> = inputs.iter()
+        .map(|conn| match conn {
+            LayerConnection::DefaultOutput(id) => id.to_string(),
+            LayerConnection::SpecificOutput(id, _) => id.to_string(),
+        })
+        .collect();
+    
+    let out_ids: Vec<String> = outputs.iter()
+        .map(|conn| match conn {
+            LayerConnection::DefaultOutput(id) => id.to_string(),
+            LayerConnection::SpecificOutput(id, _) => id.to_string(),
+        })
+        .collect();
+    
+    if in_ids.is_empty() && out_ids.is_empty() {
+        return "None".to_string();
+    }
+    
+    let mut result = String::new();
+    
+    if !in_ids.is_empty() {
+        result.push_str(&format!("in:[{}]", in_ids.join(",")));
+    }
+    
+    if !out_ids.is_empty() {
+        if !result.is_empty() {
+            result.push_str(" ");
+        }
+        result.push_str(&format!("out:[{}]", out_ids.join(",")));
+    }
+    
+    result
 }
 
 pub fn print_layer_values(cm: &ComputeManager, layer_id: LayerId) -> Result<(), VKMLEngineError> {

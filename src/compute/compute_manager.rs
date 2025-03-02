@@ -18,7 +18,7 @@ pub struct ComputeTensor {
 pub struct ExecutionStep {
     pub layer_id: LayerId,
     layer_exec: LayerExecution,
-    input_tensors: Vec<TensorDesc>,
+    pub input_tensors: Vec<TensorDesc>,
     pub output_tensors: Vec<TensorDesc>,
 }
 

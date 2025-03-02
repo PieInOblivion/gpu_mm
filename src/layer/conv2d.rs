@@ -151,8 +151,7 @@ impl Layer for Conv2DLayer {
     
     fn config_string(&self) -> Option<String> {
         Some(format!(
-            "in_channels={}, out_channels={}, kernel={}×{}, stride={}×{}, padding={}×{}, bias={}", 
-            self.in_features, self.out_features,
+            "kernel={}×{}, stride={}×{}, padding={}×{}, bias={}", 
             self.kernel_h, self.kernel_w,
             self.stride_h, self.stride_w,
             self.padding_h, self.padding_w,

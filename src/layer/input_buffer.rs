@@ -68,9 +68,9 @@ impl Layer for InputLayer {
     
     fn config_string(&self) -> Option<String> {
         if self.track_gradients {
-            Some(format!("features={}, with_gradients=true", self.out_features))
+            Some(format!("with_gradients=true"))
         } else {
-            Some(format!("features={}", self.out_features))
+            Some(format!("with_gradients=false"))
         }
     }
     

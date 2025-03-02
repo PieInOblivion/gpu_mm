@@ -110,8 +110,11 @@ impl Layer for LinearLayer {
     }
 
     fn config_string(&self) -> Option<String> {
-        Some(format!("in_features={}, out_features={}, bias={}", 
-                   self.in_features, self.out_features, self.bias))
+        if self.bias {
+            Some("bias=true".to_string())
+        } else {
+            Some("bias=false".to_string())
+        }
     }
     
     fn in_features(&self) -> usize {

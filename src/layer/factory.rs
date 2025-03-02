@@ -1,6 +1,6 @@
 use crate::model::tensor_desc::TensorDesc;
 
-use super::{activations::{ActivationLayer, ActivationType}, conv2d::Conv2DLayer, element_wise::{ElementWiseLayer, ElementWiseOperation}, input_buffer::InputLayer, layer::Layer, linear::LinearLayer, reshape::ReshapeLayer};
+use super::{activations::{ActivationLayer, ActivationType}, concat::ConcatLayer, conv2d::Conv2DLayer, element_wise::{ElementWiseLayer, ElementWiseOperation}, input_buffer::InputLayer, layer::Layer, linear::LinearLayer, reshape::ReshapeLayer};
 
 pub struct Layers;
 
@@ -55,6 +55,10 @@ impl Layers {
     
     pub fn flatten() -> Box<dyn Layer> {
         Box::new(ReshapeLayer::flatten())
+    }
+
+    pub fn concat(dim: usize) -> Box<dyn Layer> {
+        Box::new(ConcatLayer::new(dim))
     }
 
     pub fn add() -> Box<dyn Layer> {

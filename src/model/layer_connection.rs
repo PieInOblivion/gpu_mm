@@ -1,6 +1,6 @@
 pub type LayerId = usize;
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum LayerConnection {
     DefaultOutput(LayerId),
     SpecificOutput(LayerId, usize),

@@ -5,7 +5,7 @@ use dataloader::{config::DataLoaderConfig, data_batch::DataBatch, dataloader::Da
 use gpu::vk_gpu::GPU;
 
 use layer::factory::Layers;
-use model::{graph_model::GraphModel, weight_init::WeightInit};
+use model::{graph_model::GraphModel, layer_connection::LayerConnection, tensor_desc::TensorDesc, weight_init::WeightInit};
 use thread_pool::thread_pool::ThreadPool;
 
 mod thread_pool;
@@ -135,132 +135,90 @@ fn main() {
 
     println!("{:?}", GPU::available_gpus());
 
-    //let mut m = ModelDesc::new(64);
-    let mut m = GraphModel::new(64);
+    let mut model = GraphModel::new(64);
 
-    m.add_layer(Layers::input_buffer(785));
+   let input1_id = model.add_layer(Layers::input_buffer(100));
+   let input2_id = model.add_layer(Layers::input_buffer(50));
+   
+   let fc1_id = model.add_layer_with(
+       model.next_available_id(),
+       Layers::linear(100, 64),
+       vec![LayerConnection::DefaultOutput(input1_id)],
+       None
+   );
+   
+   let relu1_id = model.add_layer_with(
+       model.next_available_id(),
+       Layers::relu(),
+       vec![LayerConnection::DefaultOutput(fc1_id)],
+       None
+   );
+   
+   let fc2_id = model.add_layer_with(
+       model.next_available_id(),
+       Layers::linear(50, 32),
+       vec![LayerConnection::DefaultOutput(input2_id)],
+       None
+   );
+   
+   let relu2_id = model.add_layer_with(
+       model.next_available_id(),
+       Layers::relu(),
+       vec![LayerConnection::DefaultOutput(fc2_id)],
+       None
+   );
 
-    m.add_layer(Layers::linear(785, 512));
+   let fc3_id = model.add_layer_with(
+       model.next_available_id(),
+       Layers::linear(100, 32),
+       vec![LayerConnection::DefaultOutput(input1_id)],
+       None
+   );
+   
+   let relu3_id = model.add_layer_with(
+       model.next_available_id(),
+       Layers::relu(),
+       vec![LayerConnection::DefaultOutput(fc3_id)],
+       None
+   );
+   
+   let add_id = model.add_layer_with(
+       model.next_available_id(),
+       Layers::add(),
+       vec![
+           LayerConnection::DefaultOutput(relu2_id),
+           LayerConnection::DefaultOutput(relu3_id)
+       ],
+       None
+   );
+   
+   let concat_id = model.add_layer_with(
+       model.next_available_id(),
+       Layers::concat(1),
+       vec![
+           LayerConnection::DefaultOutput(relu1_id),
+           LayerConnection::DefaultOutput(add_id)
+       ],
+       None
+   );
+   
+   let final_fc_id = model.add_layer_with(
+       model.next_available_id(),
+       Layers::linear(96, 10),
+       vec![LayerConnection::DefaultOutput(concat_id)],
+       None
+   );
 
-    m.add_layer(Layers::relu());
+   let secondary_fc_id = model.add_layer_with(
+       model.next_available_id(),
+       Layers::linear(32, 5),
+       vec![LayerConnection::DefaultOutput(add_id)],
+       None
+   );
 
-    m.add_layer(Layers::linear(512, 256));
-
-    m.add_layer(Layers::relu());
-
-    m.add_layers(vec![
-        Layers::linear(256, 64),
-        Layers::relu(),
-        Layers::linear(64, 1)
-    ]);
-
-    let cm = ComputeManager::new(m, thread_pool.clone()).unwrap();
-    
-    //cm.move_model_to_cpu().unwrap();
+    let cm = ComputeManager::new(model, thread_pool.clone()).unwrap();
     
     cm.print_model_stats();
 
     cm.print_layer_values(2).unwrap();
-/*
-    {
-        println!("Starting GPU memory tracking verification...\n");
-    
-        let mut gpu = GPU::new(1).unwrap();
-        let total_memory = gpu.total_memory();
-        let initial_available = gpu.available_memory();
-        
-        println!("Total GPU memory: {} MB", total_memory / 1024 / 1024);
-        println!("Available memory according to tracker: {} MB\n", initial_available / 1024 / 1024);
-    
-        // Binary search for maximum allocation size
-        let mut low = 1024 * 1024; // 1MB in bytes
-        let mut high = initial_available;
-        let mut max_successful = 0;
-    
-        while low <= high {
-            let mid = low + (high - low) / 2;
-            let num_floats = mid as usize / std::mem::size_of::<f32>();
-            print!("Trying to allocate {} MB... ", mid / 1024 / 1024);
-    
-            let test_data: Vec<f32> = vec![1.0; num_floats];
-    
-            match gpu.allocate_memory(mid) {
-                Ok(()) => {
-                    match gpu.move_to_gpu_as_f32(&test_data) {
-                        Ok(gpu_mem) => {
-                            println!("Success!");
-                            max_successful = mid;
-                            // Immediately free the memory for next iteration
-                            drop(gpu_mem);
-                            gpu.deallocate_memory(mid);
-                            // Try a larger size
-                            low = mid + 1024 * 1024; // Increment by 1MB for finer granularity
-                        },
-                        Err(e) => {
-                            println!("Failed to move to GPU: {}", e);
-                            gpu.deallocate_memory(mid);
-                            high = mid - 1024 * 1024;
-                        }
-                    }
-                },
-                Err(e) => {
-                    println!("Memory tracker prevented allocation: {}", e);
-                    high = mid - 1024 * 1024;
-                }
-            }
-        }
-        
-        println!("\nResults:");
-        println!("Maximum single allocation: {} MB", max_successful / 1024 / 1024);
-        println!("Initial available memory: {} MB", initial_available / 1024 / 1024);
-        println!("Final available memory: {} MB", gpu.available_memory() / 1024 / 1024);
-        
-        // Verify that our tracking matches reality
-        let accuracy = (max_successful as f64 / initial_available as f64) * 100.0;
-        println!("\nMemory Tracker Accuracy:");
-        println!("Our tracker predicted: {} MB", initial_available / 1024 / 1024);
-        println!("Actually allocatable: {} MB", max_successful / 1024 / 1024);
-        println!("Tracking accuracy: {:.1}%", accuracy);
-        
-        if accuracy < 90.0 {
-            println!("\nWARNING: Memory tracker might be too conservative!");
-        } else if accuracy > 100.0 {
-            println!("\nWARNING: Memory tracker might be too optimistic!");
-        } else {
-            println!("\nMemory tracker appears to be reasonably accurate.");
-        }
-    
-        println!("\nTest completed successfully");
-    }*/
-    /*
-    // Initialize compute manager with available GPUs
-    let gpus = ComputeManager::available_gpus().unwrap();
-    let cpu_memory_limit = 8 * 1024 * 1024 * 1024; // 8GB
-    let compute = ComputeManager::new(
-        gpus,
-        cpu_memory_limit,
-        ColorType::Rgb32F
-    );
-
-    // Create model with compute manager
-    let mut model = Model::new(compute);
-
-    // Add individual layer
-    model.add_layer(LayerType::Linear { 
-        in_features: 784, 
-        out_features: 128 
-    }).unwrap();
-    model.add_layer(LayerType::ReLU).unwrap();
-
-    // Add multiple layers at once
-    model.add_layers(vec![
-        LayerType::Linear { in_features: 128, out_features: 64 },
-        LayerType::ReLU,
-        LayerType::Linear { in_features: 64, out_features: 10 },
-    ]).unwrap();
-
-    // Create input tensor and perform forward pass
-    let input = Tensor::new(vec![1, 784]).unwrap();
-    let output = model.forward(input).unwrap();
-    */
 }
