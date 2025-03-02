@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{dataloader::error::VKMLEngineError, layer::layer::Layer};
+use crate::{dataloader::error::VKMLEngineError, layer::layer::Layer, tensor::tensor_desc::TensorDesc};
 
-use super::{layer_connection::{LayerConnection, LayerId}, tensor_desc::TensorDesc, weight_init::WeightInit};
+use super::{layer_connection::{LayerConnection, LayerId}, weight_init::WeightInit};
 
 pub struct GraphModel {
     pub batch_size: usize,

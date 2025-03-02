@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{compute::{compute_manager::ComputeTensor, location::ComputeLocation}, dataloader::error::VKMLEngineError, model::{instruction::Instruction, tensor_desc::TensorDesc}};
+use crate::{dataloader::error::VKMLEngineError, model::instruction::Instruction, tensor::{compute_tensor::ComputeTensor, tensor_data::TensorData, tensor_desc::TensorDesc}};
 
 use super::{execution::LayerExecution, layer::Layer};
 
@@ -101,17 +101,17 @@ impl Layer for ElementWiseLayer {
         
         tensors.insert("input0".to_string(), ComputeTensor {
             desc: first_shape.clone(),
-            location: ComputeLocation::Unallocated,
+            data: TensorData::Unallocated,
         });
         
         tensors.insert("input1".to_string(), ComputeTensor {
             desc: first_shape.clone(),
-            location: ComputeLocation::Unallocated,
+            data: TensorData::Unallocated,
         });
         
         tensors.insert("output".to_string(), ComputeTensor {
             desc: first_shape.clone(),
-            location: ComputeLocation::Unallocated,
+            data: TensorData::Unallocated,
         });
         
         let mut instructions = Vec::new();

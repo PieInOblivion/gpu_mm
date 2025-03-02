@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
 use crate::{
-    compute::{compute_manager::ComputeTensor, location::ComputeLocation}, 
     dataloader::error::VKMLEngineError, 
-    model::{instruction::Instruction, tensor_desc::TensorDesc}
+    model::instruction::Instruction, tensor::{compute_tensor::ComputeTensor, tensor_data::TensorData, tensor_desc::TensorDesc}
 };
 
 use super::{execution::LayerExecution, layer::Layer};
@@ -202,7 +201,7 @@ impl Layer for ReshapeLayer {
         
         tensors.insert("input".to_string(), ComputeTensor {
             desc: input_shape.clone(),
-            location: ComputeLocation::Unallocated,
+            data: TensorData::Unallocated,
         });
 
         let output_shapes = self.output_shapes(batch_size, &[input_shape])?;
@@ -210,7 +209,7 @@ impl Layer for ReshapeLayer {
         
         tensors.insert("output".to_string(), ComputeTensor {
             desc: output_shape.clone(),
-            location: ComputeLocation::Unallocated,
+            data: TensorData::Unallocated,
         });
         
         let instructions = vec![

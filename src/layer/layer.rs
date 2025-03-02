@@ -1,4 +1,4 @@
-use crate::{dataloader::error::VKMLEngineError, model::tensor_desc::TensorDesc};
+use crate::{dataloader::error::VKMLEngineError, tensor::tensor_desc::TensorDesc};
 
 use super::execution::LayerExecution;
 

@@ -1,4 +1,4 @@
-use crate::{compute::compute_manager::{ComputeManager, ComputeTensor}, dataloader::error::VKMLEngineError, model::layer_connection::{LayerConnection, LayerId}};
+use crate::{compute::compute_manager::ComputeManager, dataloader::error::VKMLEngineError, model::layer_connection::{LayerConnection, LayerId}, tensor::compute_tensor::ComputeTensor};
 
 pub fn print_model_stats(cm: &ComputeManager) {
     let mut total_params = 0usize;

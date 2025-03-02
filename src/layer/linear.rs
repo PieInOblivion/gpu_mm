@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{compute::{compute_manager::ComputeTensor, location::ComputeLocation}, dataloader::error::VKMLEngineError, model::{instruction::Instruction, tensor_desc::TensorDesc}};
+use crate::{dataloader::error::VKMLEngineError, model::instruction::Instruction, tensor::{compute_tensor::ComputeTensor, tensor_data::TensorData, tensor_desc::TensorDesc}};
 
 use super::{execution::LayerExecution, layer::Layer};
 
@@ -152,17 +152,17 @@ impl Layer for LinearLayer {
         
         tensors.insert("input".to_string(), ComputeTensor {
             desc: input_shape.clone(),
-            location: ComputeLocation::Unallocated,
+            data: TensorData::Unallocated,
         });
         
         tensors.insert("weights".to_string(), ComputeTensor {
             desc: TensorDesc::new_matrix(self.out_features, in_features),
-            location: ComputeLocation::Unallocated,
+            data: TensorData::Unallocated,
         });
         
         tensors.insert("output".to_string(), ComputeTensor {
             desc: TensorDesc::new_matrix(batch_size, self.out_features),
-            location: ComputeLocation::Unallocated,
+            data: TensorData::Unallocated,
         });
         
         let mut instructions = Vec::new();
@@ -183,7 +183,7 @@ impl Layer for LinearLayer {
         if self.bias {
             tensors.insert("bias".to_string(), ComputeTensor {
                 desc: TensorDesc::new_vector(self.out_features),
-                location: ComputeLocation::Unallocated,
+                data: TensorData::Unallocated,
             });
             
             instructions.push(Instruction::Add {

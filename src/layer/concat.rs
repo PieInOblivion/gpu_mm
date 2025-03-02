@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{compute::{compute_manager::ComputeTensor, location::ComputeLocation}, dataloader::error::VKMLEngineError, model::{instruction::Instruction, tensor_desc::TensorDesc}};
+use crate::{dataloader::error::VKMLEngineError, model::instruction::Instruction, tensor::{compute_tensor::ComputeTensor, tensor_data::TensorData, tensor_desc::TensorDesc}};
 
 use super::{execution::LayerExecution, layer::Layer};
 
@@ -141,7 +141,7 @@ impl Layer for ConcatLayer {
             let tensor_name = format!("input{}", i);
             tensors.insert(tensor_name.clone(), ComputeTensor {
                 desc: (*shape).clone(),
-                location: ComputeLocation::Unallocated,
+                data: TensorData::Unallocated,
             });
             
             // Create ReadInput instruction for this input
@@ -158,7 +158,7 @@ impl Layer for ConcatLayer {
         
         tensors.insert("output".to_string(), ComputeTensor {
             desc: output_shape,
-            location: ComputeLocation::Unallocated,
+            data: TensorData::Unallocated,
         });
         
         // Create concat instruction with all inputs

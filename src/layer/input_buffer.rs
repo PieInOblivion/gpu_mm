@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{compute::{compute_manager::ComputeTensor, location::ComputeLocation}, dataloader::error::VKMLEngineError, model::tensor_desc::TensorDesc};
+use crate::{dataloader::error::VKMLEngineError, tensor::{compute_tensor::ComputeTensor, tensor_data::TensorData, tensor_desc::TensorDesc}};
 
 use super::{execution::LayerExecution, layer::Layer};
 
@@ -85,13 +85,13 @@ impl Layer for InputLayer {
         
         tensors.insert("output".to_string(), ComputeTensor {
             desc: TensorDesc::new_matrix(batch_size, self.out_features),
-            location: ComputeLocation::Unallocated,
+            data: TensorData::Unallocated,
         });
         
         if self.track_gradients {
             tensors.insert("grad_output".to_string(), ComputeTensor {
                 desc: TensorDesc::new_matrix(batch_size, self.out_features),
-                location: ComputeLocation::Unallocated,
+                data: TensorData::Unallocated,
             });
         }
         

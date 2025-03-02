@@ -1,4 +1,4 @@
-use super::tensor_desc::TensorDesc;
+use crate::tensor::tensor_desc::TensorDesc;
 
 // Execution tape instructions
 pub enum Instruction {

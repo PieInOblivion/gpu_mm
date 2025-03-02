@@ -2,10 +2,9 @@ use rand::distr::{Distribution, Uniform};
 use std::f32::consts::PI;
 use std::sync::Arc;
 
+use crate::tensor::tensor_desc::TensorDesc;
 use crate::thread_pool::thread_pool::ThreadPool;
 use crate::thread_pool::worker::{DataPtrF32, WorkType};
-
-use super::tensor_desc::TensorDesc;
 
 #[derive(Clone)]
 pub enum WeightInit {

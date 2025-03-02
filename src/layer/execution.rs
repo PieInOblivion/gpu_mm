@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{compute::compute_manager::ComputeTensor, model::instruction::Instruction};
+use crate::{model::instruction::Instruction, tensor::compute_tensor::ComputeTensor};
 
 pub struct LayerExecution {
     pub tensors: HashMap<String, ComputeTensor>,

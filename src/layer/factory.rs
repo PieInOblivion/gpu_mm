@@ -1,4 +1,4 @@
-use crate::model::tensor_desc::TensorDesc;
+use crate::tensor::tensor_desc::TensorDesc;
 
 use super::{activations::{ActivationLayer, ActivationType}, concat::ConcatLayer, conv2d::Conv2DLayer, element_wise::{ElementWiseLayer, ElementWiseOperation}, input_buffer::InputLayer, layer::Layer, linear::LinearLayer, reshape::ReshapeLayer};
 

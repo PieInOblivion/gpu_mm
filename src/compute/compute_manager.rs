@@ -1,18 +1,13 @@
 use std::sync::Arc;
 
 use crate::{
-    dataloader::error::VKMLEngineError, gpu::vk_gpu::GPU, layer::execution::LayerExecution, model::{graph_model::GraphModel, instruction::Instruction, layer_connection::LayerId, tensor_desc::TensorDesc, weight_init::WeightInit}, thread_pool::thread_pool::ThreadPool};
+    dataloader::error::VKMLEngineError, gpu::vk_gpu::GPU, layer::execution::LayerExecution, model::{graph_model::GraphModel, instruction::Instruction, layer_connection::LayerId, weight_init::WeightInit}, tensor::{compute_tensor::ComputeTensor, tensor_data::TensorData, tensor_desc::TensorDesc}, thread_pool::thread_pool::ThreadPool};
 
-use super::{cpu_compute::CPUCompute, location::ComputeLocation, memory_tracker::MemoryTracker, print_model_stats};
+use super::{cpu_compute::CPUCompute, print_model_stats};
 
 pub enum DeviceLocation {
     CPU,
     GPU(usize)
-}
-
-pub struct ComputeTensor {
-    pub desc: TensorDesc,
-    pub location: ComputeLocation,
 }
 
 pub struct ExecutionStep {
@@ -157,7 +152,7 @@ impl ComputeManager {
             let layer_id = step.layer_id;
             
             let tensors_to_allocate: Vec<(String, TensorDesc)> = step.layer_exec.tensors.iter()
-                .filter(|(_, tensor)| matches!(tensor.location, ComputeLocation::Unallocated))
+                .filter(|(_, tensor)| matches!(tensor.data, TensorData::Unallocated))
                 .map(|(name, tensor)| (name.clone(), tensor.desc.clone()))
                 .collect();
             
@@ -183,7 +178,7 @@ impl ComputeManager {
                 
                 // Update tensor location directly
                 let tensor = &mut self.execution_pipeline[step_index].layer_exec.tensors.get_mut(&name).unwrap();
-                tensor.location = location;
+                tensor.data = location;
             }
         }
         
@@ -223,7 +218,7 @@ impl ComputeManager {
         }
     }
 
-    fn allocate_tensor(&mut self, desc: &TensorDesc, target_device: &DeviceLocation, weight_init: &WeightInit) -> Result<ComputeLocation, VKMLEngineError> {
+    fn allocate_tensor(&mut self, desc: &TensorDesc, target_device: &DeviceLocation, weight_init: &WeightInit) -> Result<TensorData, VKMLEngineError> {
         // Allocate memory on target device
         let size_in_bytes = desc.size_in_bytes() as u64;
 
@@ -245,7 +240,7 @@ impl ComputeManager {
         match *target_device {
             DeviceLocation::CPU => {
                 self.cpu.memory_tracking.allocate(size_in_bytes)?;
-                Ok(ComputeLocation::CPU(initial_data))
+                Ok(TensorData::CPU(initial_data))
             },
             DeviceLocation::GPU(idx) => {
                 let gpu = &mut self.gpus[idx];
@@ -254,7 +249,7 @@ impl ComputeManager {
                 let gpu_memory = gpu.move_to_gpu_as_f32(&initial_data)
                     .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                 
-                Ok(ComputeLocation::GPU {
+                Ok(TensorData::GPU {
                     gpu_idx: idx,
                     memory: gpu_memory,
                 })
@@ -267,14 +262,14 @@ impl ComputeManager {
         tensor: &mut ComputeTensor,
         target_device: &DeviceLocation
     ) -> Result<(), VKMLEngineError> {
-        if let ComputeLocation::Unallocated = tensor.location {
+        if let TensorData::Unallocated = tensor.data {
             return Ok(());
         }
     
         // If already on target device, nothing to do
-        match (&tensor.location, target_device) {
-            (ComputeLocation::CPU(_), DeviceLocation::CPU) => return Ok(()),
-            (ComputeLocation::GPU { gpu_idx, .. }, DeviceLocation::GPU(target_idx))
+        match (&tensor.data, target_device) {
+            (TensorData::CPU(_), DeviceLocation::CPU) => return Ok(()),
+            (TensorData::GPU { gpu_idx, .. }, DeviceLocation::GPU(target_idx))
                 if gpu_idx == target_idx => return Ok(()),
             _ => {}
         }
@@ -293,8 +288,8 @@ impl ComputeManager {
         }
     
         // Perform the move
-        let new_location = match &tensor.location {
-            ComputeLocation::CPU(data) => {
+        let new_location = match &tensor.data {
+            TensorData::CPU(data) => {
                 match target_device {
                     DeviceLocation::CPU => unreachable!(), // Handled above
                     DeviceLocation::GPU(idx) => {
@@ -303,14 +298,14 @@ impl ComputeManager {
                         let gpu_mem = gpu.move_to_gpu_as_f32(data)
                             .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
     
-                        ComputeLocation::GPU {
+                        TensorData::GPU {
                             gpu_idx: *idx,
                             memory: gpu_mem,
                         }
                     }
                 }
             },
-            ComputeLocation::GPU { gpu_idx, memory } => {
+            TensorData::GPU { gpu_idx, memory } => {
                 match target_device {
                     DeviceLocation::CPU => {
                         // GPU to CPU
@@ -318,7 +313,7 @@ impl ComputeManager {
                         let cpu_data = gpu.read_memory(memory)
                             .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                         
-                        ComputeLocation::CPU(cpu_data)
+                        TensorData::CPU(cpu_data)
                     },
                     DeviceLocation::GPU(target_idx) => {
                         // GPU to different GPU
@@ -330,52 +325,52 @@ impl ComputeManager {
                         let new_gpu_mem = target_gpu.move_to_gpu_as_f32(&cpu_data)
                             .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))?;
                         
-                        ComputeLocation::GPU {
+                        TensorData::GPU {
                             gpu_idx: *target_idx,
                             memory: new_gpu_mem,
                         }
                     }
                 }
             },
-            ComputeLocation::Unallocated => unreachable!(),
+            TensorData::Unallocated => unreachable!(),
         };
     
         // Deallocate from old device
-        match &tensor.location {
-            ComputeLocation::CPU(_) => {
+        match &tensor.data {
+            TensorData::CPU(_) => {
                 self.cpu.memory_tracking.deallocate(size);
             },
-            ComputeLocation::GPU { gpu_idx, .. } => {
+            TensorData::GPU { gpu_idx, .. } => {
                 self.gpus[*gpu_idx].deallocate_memory(size);
             },
-            ComputeLocation::Unallocated => unreachable!(),
+            TensorData::Unallocated => unreachable!(),
         }
     
-        tensor.location = new_location;
+        tensor.data = new_location;
         Ok(())
     }
 
     pub fn get_tensor_data(&self, tensor: &ComputeTensor) -> Result<(Vec<f32>, Option<usize>), VKMLEngineError> {
-        match &tensor.location {
-            ComputeLocation::CPU(data) => {
+        match &tensor.data {
+            TensorData::CPU(data) => {
                 Ok((data.clone(), None))
             },
-            ComputeLocation::GPU { gpu_idx, memory } => {
+            TensorData::GPU { gpu_idx, memory } => {
                 self.gpus[*gpu_idx].read_memory(memory)
                     .map_err(|e| VKMLEngineError::VulkanLoadError(e.to_string()))
                     .map(|data| (data, Some(*gpu_idx)))
             },
-            ComputeLocation::Unallocated => {
+            TensorData::Unallocated => {
                 Ok((vec![], None))
             },
         }
     }
     
     pub fn get_device_description(&self, tensor: &ComputeTensor) -> String {
-        match &tensor.location {
-            ComputeLocation::CPU(_) => "CPU".to_string(),
-            ComputeLocation::GPU { gpu_idx, .. } => format!("GPU {}", gpu_idx),
-            ComputeLocation::Unallocated => "Unallocated".to_string(),
+        match &tensor.data {
+            TensorData::CPU(_) => "CPU".to_string(),
+            TensorData::GPU { gpu_idx, .. } => format!("GPU {}", gpu_idx),
+            TensorData::Unallocated => "Unallocated".to_string(),
         }
     }
     

@@ -1,11 +1,11 @@
 mod gpu;
 
-use compute::{compute_manager::ComputeManager, print_model_stats::{print_layer_values, print_model_stats}};
+use compute::compute_manager::ComputeManager;
 use dataloader::{config::DataLoaderConfig, data_batch::DataBatch, dataloader::DatasetSplit, for_imagesdir::DirectoryImageLoader, par_iter::MultithreadedDataLoaderIterator};
 use gpu::vk_gpu::GPU;
 
 use layer::factory::Layers;
-use model::{graph_model::GraphModel, layer_connection::LayerConnection, tensor_desc::TensorDesc, weight_init::WeightInit};
+use model::{graph_model::GraphModel, layer_connection::LayerConnection};
 use thread_pool::thread_pool::ThreadPool;
 
 mod thread_pool;
@@ -17,6 +17,8 @@ mod model;
 mod dataloader;
 
 mod layer;
+
+mod tensor;
 
 /* Design descisions and some TODOs
     Current proof of concept implementation of image loader stores all file names in memory
